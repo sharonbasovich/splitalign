@@ -1,0 +1,26 @@
+SplitAlign — Hack Apertus Online 2026, Track 2A (UZH SwissGov-RSD)
+Team: Waterloo Agent Lab — Sharon Basovich
+
+Code: Apache License 2.0 (see LICENSE).
+Technical report: CC-BY-4.0.
+Prediction files produced by this project: CDLA-Permissive-2.0
+  (see track_2a/docs/licenses/CDLA-Permissive-2.0.txt).
+
+Upstream attributions
+---------------------
+- SwissGov-RSD evaluation code (vendored under
+  track_2a/src/vendor/swissgov_rsd/): MIT License, (c) 2023 University of
+  Zurich, ZurichNLP. Source: https://github.com/ZurichNLP/SwissGov-RSD
+  pinned to commit 1807a42100e742ed03d337c54c4b9ea86995f565.
+- SwissGov-RSD dataset (dev/train + dev/val only, under track_2a/data/):
+  CC-BY-4.0, ZurichNLP. Cite: Wastl, Vamvas & Sennrich, ACL 2026
+  (https://aclanthology.org/2026.acl-long.1437/).
+- Held-out splits (dev/test? no — test/, full/) were NEVER fetched, opened
+  or evaluated in this build; see track_2a/src/splitalign/guard.py and
+  data/manifest/dev_ids.json.
+
+AI assistance disclosure
+------------------------
+This project was implemented by Devin, an AI coding agent by Cognition AI,
+for Sharon Basovich's Hack Apertus entry. Human-provided content: the
+strategy/design brief and credentials provisioning.

@@ -1,0 +1,53 @@
+{
+  "commit": "1807a42100e742ed03d337c54c4b9ea86995f565",
+  "files": {
+    "gold/dev/train/gold_admin_de.jsonl": {
+      "sha256": "4d3df840f907a49eca2803f62e059cd1a9b714a9095142b6bd9d5f7f66efbc3f",
+      "bytes": 1216374
+    },
+    "gold/dev/train/gold_admin_de_short.jsonl": {
+      "sha256": "ce56610d2a12cf776dae5de1c86b2878813fcc2a08cebc846b52a052f39914ca",
+      "bytes": 1342865
+    },
+    "gold/dev/train/gold_admin_fr.jsonl": {
+      "sha256": "77c2f77f2cf569f418602b50501025d755de42f410cab1891c2f38bd3b9e2475",
+      "bytes": 1331575
+    },
+    "gold/dev/train/gold_admin_fr_short.jsonl": {
+      "sha256": "278a17648c30072625fcc16736cdd8bd75f19e8679161c47b97aca61d251b625",
+      "bytes": 1480459
+    },
+    "gold/dev/train/gold_admin_it.jsonl": {
+      "sha256": "d2c96688dd94c938c1bdce529f15fa088601dde1fc00143340a2238de15af700",
+      "bytes": 1272498
+    },
+    "gold/dev/train/gold_admin_it_short.jsonl": {
+      "sha256": "9c3520d794080d204a479ea2036b2fffa039d9b383de629e782f8d73d1b2fb32",
+      "bytes": 1415726
+    },
+    "gold/dev/val/gold_admin_de.jsonl": {
+      "sha256": "0beecfe0b8e43a538951c6d8e21f8970771cf4e7d1e8ffb3b723dad3349276ee",
+      "bytes": 285304
+    },
+    "gold/dev/val/gold_admin_de_short.jsonl": {
+      "sha256": "43b822bb17d0e3808ffcbc81b875a6f92011bf870723da56b25192bf0186951f",
+      "bytes": 316950
+    },
+    "gold/dev/val/gold_admin_fr.jsonl": {
+      "sha256": "dc87a394bd33353d39e77019d1646e7a416368dd46f855615cb208a232872885",
+      "bytes": 308511
+    },
+    "gold/dev/val/gold_admin_fr_short.jsonl": {
+      "sha256": "1e47cf0f9dbe6f9c4d1af793c6f78ba21afbef85a0fd3e24ac52e63f991c42a0",
+      "bytes": 345331
+    },
+    "gold/dev/val/gold_admin_it.jsonl": {
+      "sha256": "6b9826db9919fe383cecbc09ff355e51aacb6cef1145d5001c03f0f6ab0da9bb",
+      "bytes": 294254
+    },
+    "gold/dev/val/gold_admin_it_short.jsonl": {
+      "sha256": "0da3dd8168115098e2e7ade6dbc407e995e8b97abd35b430dfe6878b05913143",
+      "bytes": 328473
+    }
+  }
+}

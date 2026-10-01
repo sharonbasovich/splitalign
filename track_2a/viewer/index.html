@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SplitAlign — cross-lingual difference evidence viewer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>SplitAlign <span class="sub">token-level cross-lingual semantic difference — evidence viewer</span></h1>
+  <div id="banner" class="banner"></div>
+  <nav id="controls" aria-label="viewer controls">
+    <label>Item <select id="itemSel" aria-label="select document pair"></select></label>
+    <label>Mode <select id="modeSel" aria-label="select model mode"></select></label>
+    <label>Labels <select id="labelSel" aria-label="predicted or gold labels">
+      <option value="pred">Predicted</option>
+      <option value="gold">Gold (dev)</option>
+      <option value="delta">|pred − gold|</option>
+    </select></label>
+    <span id="evalSummary" class="eval"></span>
+  </nav>
+</header>
+<main>
+  <section id="meta" class="meta" aria-live="polite"></section>
+  <section id="alignView" aria-label="aligned sentence pairs"></section>
+  <section id="docView" aria-label="document token heatmap">
+    <div class="col"><h2 id="hA">English</h2><div id="tokA" class="tokflow" tabindex="0"></div></div>
+    <div class="col"><h2 id="hB">Other</h2><div id="tokB" class="tokflow" tabindex="0"></div></div>
+  </section>
+  <section class="legend" aria-label="legend">
+    <span><i class="sw" style="background:#e8f5e9"></i> equivalent (0)</span>
+    <span><i class="sw" style="background:#fff59d"></i> partial</span>
+    <span><i class="sw" style="background:#ef9a9a"></i> different (1)</span>
+    <span><i class="sw sw-punct"></i> punctuation (-1)</span>
+    <span class="kbd-hint">Keys: ←/→ item, ↑/↓ pair, g = gold, p = predicted</span>
+  </section>
+  <details class="limitations"><summary>Limitations &amp; provenance</summary>
+    <ul id="limList"></ul>
+    <pre id="prov"></pre>
+  </details>
+</main>
+<script src="evidence.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
