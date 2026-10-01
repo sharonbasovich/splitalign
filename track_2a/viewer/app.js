@@ -57,7 +57,7 @@
       if (!its.length) return;
       if (e.key === "ArrowRight") { state.item = Math.min(its.length - 1, state.item + 1); state.pair = 0; }
       else if (e.key === "ArrowLeft") { state.item = Math.max(0, state.item - 1); state.pair = 0; }
-      else if (e.key === "ArrowDown") { state.pair++; }
+      else if (e.key === "ArrowDown") { const it = item(); state.pair = Math.min(Math.max(0, ((it && it.ops) || []).length - 1), state.pair + 1); }
       else if (e.key === "ArrowUp") { state.pair = Math.max(0, state.pair - 1); }
       else if (e.key === "g") { state.labels = "gold"; $("labelSel").value = "gold"; }
       else if (e.key === "p") { state.labels = "pred"; $("labelSel").value = "pred"; }
