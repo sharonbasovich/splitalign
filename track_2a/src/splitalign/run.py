@@ -23,7 +23,8 @@ from pathlib import Path
 
 from . import PROMPT_VERSION, __version__, guard
 from .align import AlignConfig
-from .apertus import ApertusUnavailable, MissingCredentials
+from .apertus import (ApiBudget, ApertusUnavailable, BudgetExceeded,
+                      MissingCredentials)
 from .evaluate import evaluate_predictions, evaluate_split
 from .fetch_data import ALLOWLIST, fetch, load_gold_items, write_manifest
 from .pipeline import (make_judge, predict_baseline_item, predict_item,
@@ -95,49 +96,96 @@ def _predict(args, mode: str) -> int:
         raise SystemExit("specify --split train or val")
     seed = args.seed
     backend = args.backend
+    # shared noncached-API budget across modes (mock calls are free)
+    budget = getattr(args, "_budget", None)
+    if budget is None and backend == "apertus":
+        budget = ApiBudget(max_requests=args.max_requests,
+                           max_tokens=args.max_tokens)
+        args._budget = budget
     all_details = []
-    for lang in _langs(args.lang):
-        recs = []
-        for item in _items(split, lang, args.limit, args.offset):
-            judge, backend = make_judge(args.backend, RESULTS_DIR, split, item["id"], seed)
-            try:
-                if mode == "baseline":
-                    out = predict_baseline_item(item, judge)
-                else:
-                    out = predict_item(item, judge,
-                                       score_cfg=_load_score_cfg(args))
-            except ApertusUnavailable as e:
-                # truthful per-item failure: no prediction written, run continues
-                det = {"id": item["id"], "lang": lang, "failed": True,
-                       "error": str(e)[:300],
-                       "provenance": provenance(backend, judge,
-                                                {"mode": mode, "split": split})}
+    capped = None
+    completed_ids: dict[str, list[str]] = {}
+    planned_ids: dict[str, list[str]] = {}
+    t0 = time.monotonic()
+    try:
+        for lang in _langs(args.lang):
+            recs = []
+            wanted = _items(split, lang, args.limit, args.offset)
+            planned_ids[lang] = [it["id"] for it in wanted]
+            completed_ids[lang] = []
+            for item in wanted:
+                judge, backend = make_judge(args.backend, RESULTS_DIR, split,
+                                            item["id"], seed, budget=budget)
+                try:
+                    if mode == "baseline":
+                        out = predict_baseline_item(item, judge)
+                    else:
+                        out = predict_item(item, judge,
+                                           score_cfg=_load_score_cfg(args))
+                except ApertusUnavailable as e:
+                    # truthful per-item failure: no prediction, run continues
+                    det = {"id": item["id"], "lang": lang, "failed": True,
+                           "error": str(e)[:300],
+                           "provenance": provenance(backend, judge,
+                                                    {"mode": mode, "split": split})}
+                    all_details.append(det)
+                    print(f"  {item['id']}: FAILED ({mode}) {e}", file=sys.stderr)
+                    continue
+                recs.append(out["record"])
+                completed_ids[lang].append(item["id"])
+                det = dict(out["detail"])
+                det["id"] = item["id"]
+                det["lang"] = lang
+                det["text_a"] = item["text_a"]
+                det["text_b"] = item["text_b"]
+                det["labels_a"] = out["record"]["labels_a"]
+                det["labels_b"] = out["record"]["labels_b"]
+                det["gold_labels_a"] = item["labels_a"]
+                det["gold_labels_b"] = item["labels_b"]
+                det["provenance"] = provenance(backend, judge,
+                                               {"mode": mode, "split": split})
                 all_details.append(det)
-                print(f"  {item['id']}: FAILED ({mode}) {e}", file=sys.stderr)
-                continue
-            recs.append(out["record"])
-            det = dict(out["detail"])
-            det["id"] = item["id"]
-            det["lang"] = lang
-            det["text_a"] = item["text_a"]
-            det["text_b"] = item["text_b"]
-            det["labels_a"] = out["record"]["labels_a"]
-            det["labels_b"] = out["record"]["labels_b"]
-            det["gold_labels_a"] = item["labels_a"]
-            det["gold_labels_b"] = item["labels_b"]
-            det["provenance"] = provenance(backend, judge,
-                                           {"mode": mode, "split": split})
-            all_details.append(det)
-            print(f"  {item['id']}: done ({mode})", file=sys.stderr)
-        path = _pred_path(backend, mode, lang)
-        with path.open("w") as f:
-            for r in recs:
-                f.write(json.dumps(r, ensure_ascii=False) + "\n")
-        print(f"wrote {len(recs)} predictions -> {path}")
+                print(f"  {item['id']}: done ({mode})", file=sys.stderr)
+            path = _pred_path(backend, mode, lang)
+            with path.open("w") as f:
+                for r in recs:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            print(f"wrote {len(recs)} predictions -> {path}")
+    except BudgetExceeded as e:
+        # hard cap hit mid-item: keep every completed record, report honestly
+        capped = str(e)
+        print(f"BUDGET CAP: {capped} — writing partial results", file=sys.stderr)
+        if recs:  # `lang`/`recs` remain bound from the interrupted iteration
+            path = _pred_path(backend, mode, lang)
+            with path.open("w") as f:
+                for r in recs:
+                    f.write(json.dumps(r, ensure_ascii=False) + "\n")
+            print(f"wrote {len(recs)} PARTIAL predictions -> {path}",
+                  file=sys.stderr)
     DETAIL_DIR.mkdir(parents=True, exist_ok=True)
     det_path = DETAIL_DIR / f"{mode}_{args.backend}_{split.replace('/', '_')}.json"
     det_path.write_text(json.dumps(all_details, ensure_ascii=False, indent=1))
     print(f"details -> {det_path}")
+    # run summary: completed ids, coverage, usage, remainder — never hide a cap
+    elapsed = time.monotonic() - t0
+    summary = {
+        "mode": mode, "backend": backend, "split": split,
+        "completed_ids": completed_ids,
+        "remaining_ids": {k: [i for i in v if i not in set(completed_ids[k])]
+                          for k, v in planned_ids.items()},
+        "n_planned": sum(len(v) for v in planned_ids.values()),
+        "n_completed": sum(len(v) for v in completed_ids.values()),
+        "budget_capped": capped,
+        "new_api_requests": budget.requests if budget else 0,
+        "new_api_tokens": budget.tokens if budget else 0,
+        "elapsed_s": round(elapsed, 1),
+        "caution": ("PARTIAL RUN — do not treat coverage as complete"
+                    if capped else None),
+    }
+    spath = RESULTS_DIR / f"run_summary_{mode}_{args.backend}_{split.replace('/', '_')}.json"
+    spath.write_text(json.dumps({k: v for k, v in summary.items() if v is not None},
+                                indent=2))
+    print(f"run summary -> {spath}")
     return 0
 
 
@@ -261,7 +309,9 @@ def cmd_pipeline(args) -> int:
                              require_full_coverage=args.require_full)
         (RESULTS_DIR / f"eval_{mode}_{args.backend}_{split.replace('/', '_')}.json"
          ).write_text(json.dumps(res, indent=2))
-        print(f"[{mode}] macro Spearman: {res['macro_spearman']:.4f}")
+        _m = res['macro_spearman']
+        print(f"[{mode}] macro Spearman: "
+              + (f"{_m:.4f}" if _m is not None else "null (undefined)"))
         ns2 = argparse.Namespace(**vars(args))
         ns2.mode = mode
         cmd_export_viewer(ns2)
@@ -304,6 +354,11 @@ def main(argv=None) -> int:
         p.add_argument("--require-full", action="store_true",
                        help="fail loudly if predictions cover <100% of gold "
                             "items (default: warn via coverage fields)")
+        p.add_argument("--max-requests", type=int, default=500,
+                       help="cap on NEW (noncached) API requests, apertus only")
+        p.add_argument("--max-tokens", type=int, default=600_000,
+                       help="cap on NEW API tokens (prompt+completion), "
+                            "apertus only")
         if name == "predict":
             p.set_defaults(fn=lambda a: _predict(a, "splitalign"))
         elif name == "baseline":

@@ -59,3 +59,29 @@ def test_zero_fill_when_pair_unreturned(tmp_path):
     # a pathological batch answer is not needed: unreturned pairs stay 0
     sim = j.similarity_matrix(["x", "y"], ["p", "q"])
     assert all(isinstance(v, float) for row in sim for v in row)
+
+
+# -- noncached API budget ----------------------------------------------------
+
+def test_budget_caps_new_requests_only(tmp_path):
+    import pytest
+    from splitalign.apertus import ApiBudget, BudgetExceeded
+    j = _judge(tmp_path)
+    j.budget = ApiBudget(max_requests=1, max_tokens=10**9)
+    j.similarity_matrix(["a", "b"], ["x", "y"])  # 1 batch call = 1 request
+    with pytest.raises(BudgetExceeded):
+        j.similarity_matrix(["a", "b"], ["x", "y2"])  # new payload -> new call
+    # cached replays of an identical payload must NOT consume budget
+    j2 = _judge(tmp_path)
+    j2.budget = ApiBudget(max_requests=1, max_tokens=10**9)
+    j2.similarity_matrix(["a", "b"], ["x", "y"])   # cache hit -> 0 requests
+    assert j2.budget.requests == 0
+
+
+def test_budget_token_cap(tmp_path):
+    import pytest
+    from splitalign.apertus import ApiBudget, BudgetExceeded
+    j = _judge(tmp_path)
+    j.budget = ApiBudget(max_requests=10**9, max_tokens=1)
+    with pytest.raises(BudgetExceeded):
+        j.similarity_matrix(["a", "b"], ["x", "y"])

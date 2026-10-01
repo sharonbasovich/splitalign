@@ -63,6 +63,16 @@ def _correlate(pred_labels: list[float], gold_labels: list[float],
     return float(spear), None, None, float(kend)
 
 
+def _invalid_reason(r: LangResult) -> str | None:
+    """Why a correlation is undefined — recorded truthfully, never hidden."""
+    if not (r.spearman != r.spearman):  # not NaN
+        return None
+    if r.n_samples == 0:
+        return "no matched predictions"
+    return "undefined correlation (constant or degenerate output — e.g. an " \
+           "all-one-label prediction gives no variance to correlate)"
+
+
 def evaluate_predictions(pred_records: list[dict], gold_path: Path,
                          lang: str, n_resamples: int = 1000,
                          drop_ids: frozenset | None = None) -> LangResult:
@@ -124,10 +134,26 @@ def evaluate_predictions(pred_records: list[dict], gold_path: Path,
     return res
 
 
+def _finite_or_reason(v, reason):
+    """JSON-safe float: nonfinite -> null + explicit reason."""
+    if v is None or (isinstance(v, float) and not np.isfinite(v)):
+        return None, reason
+    return float(v), None
+
+
 def _dump(r: LangResult) -> dict:
     # omit CI bounds entirely when no bootstrap was computed (never display
-    # lo == hi == point as if it were a confidence interval)
-    return {k: v for k, v in vars(r).items() if v is not None}
+    # lo == hi == point as if it were a confidence interval); serialize
+    # nonfinite metrics as null with an explicit reason — standards-safe JSON
+    reason = _invalid_reason(r)
+    out = {k: v for k, v in vars(r).items() if v is not None}
+    for k in ("spearman", "spearman_lo", "spearman_hi", "kendall"):
+        if k in out:
+            v, _ = _finite_or_reason(out[k], reason)
+            out[k] = v  # nonfinite -> explicit null, never bare NaN/Infinity
+    if reason:
+        out["invalid_reason"] = reason
+    return out
 
 
 def evaluate_split(pred_dir: Path, split: str, langs=("de", "fr", "it"),
@@ -167,14 +193,46 @@ def evaluate_split(pred_dir: Path, split: str, langs=("de", "fr", "it"),
                 "incomplete prediction coverage: "
                 + "; ".join(f"{k} missing {v[:5]}{'...' if len(v) > 5 else ''}"
                             for k, v in gaps.items()))
-    macro = float(np.mean([r.spearman for r in results.values()])) if results else float("nan")
-    macro_excl = (float(np.mean([r.spearman for r in results_excl.values()]))
-                  if results_excl else float("nan"))
+    def _macros(res_map):
+        """Strict primary macro + clearly-labeled finite-language mean.
+
+        macro_spearman is null/invalid when ANY required language's
+        correlation is undefined (or the language is missing entirely) —
+        constant/degenerate output is an informative failure, never a
+        silently excluded success. The descriptive mean over defined
+        languages is reported separately with its count and must not be
+        used as the headline comparison metric.
+        """
+        required = set(res_map.keys())
+        defined = {k: v.spearman for k, v in res_map.items()
+                   if v.spearman == v.spearman}
+        strict = (sum(defined.values()) / len(defined)
+                  if len(defined) == len(required) else None)
+        descr = sum(defined.values()) / len(defined) if defined else None
+        return strict, descr, len(defined)
+    macro, descr, n_def = _macros(results)
+    macro_excl, descr_excl, n_def_excl = _macros(results_excl)
+    n_missing = len(langs) - len(results)
+    if n_missing:
+        # a required language produced no predictions at all -> both invalid
+        macro = None
+        macro_excl = None
     return {"split": norm,
             "per_language": {k: _dump(v) for k, v in results.items()},
             "macro_spearman": macro,
+            "macro_spearman_invalid_reason": (
+                None if macro is not None else
+                "undefined for >=1 required language (constant/degenerate "
+                "output or missing predictions — see per_language)"),
+            "descriptive_mean_finite_langs": descr,
+            "descriptive_mean_langs": n_def,
             # official LLM scoring also drops list_to_drop.txt ids; report the
             # same metric excluding the dev subset of those ids for parity.
             "per_language_excl_dev_drop": {k: _dump(v) for k, v in results_excl.items()},
             "macro_spearman_excl_dev_drop": macro_excl,
+            "macro_excl_invalid_reason": (
+                None if macro_excl is not None else
+                "undefined for >=1 required language — see per_language_excl_dev_drop"),
+            "descriptive_mean_excl_dev_drop": descr_excl,
+            "descriptive_mean_excl_dev_drop_langs": n_def_excl,
             "dev_drop_ids": sorted(DEV_DROP_IDS)}

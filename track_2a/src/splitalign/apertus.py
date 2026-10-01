@@ -234,6 +234,36 @@ def lexical_similarity(a: str, b: str) -> float:
     return max(0.0, min(1.0, 2 * overlap / (len(ta) + len(tb))))
 
 
+class BudgetExceeded(RuntimeError):
+    """Noncached API budget exhausted — the run stops cleanly."""
+
+
+@dataclass
+class ApiBudget:
+    """Hard cap on NEW (noncached) requests/tokens across a whole run.
+
+    Cache hits never consume budget — reuse is allowed only when the
+    cache key (backend|model|prompt_version|kind|split|item|payload)
+    matches exactly, which DiskCache already enforces.
+    """
+    max_requests: int = 500
+    max_tokens: int = 600_000
+    requests: int = 0
+    tokens: int = 0
+
+    def begin_request(self) -> None:
+        if self.requests >= self.max_requests:
+            raise BudgetExceeded(
+                f"request cap reached ({self.requests}/{self.max_requests})")
+
+    def charge(self, result) -> None:
+        self.requests += 1
+        self.tokens += (result.prompt_tokens or 0) + (result.completion_tokens or 0)
+        if self.tokens > self.max_tokens:
+            raise BudgetExceeded(
+                f"token cap reached ({self.tokens}/{self.max_tokens})")
+
+
 class MockApertusClient:
     """Deterministic stand-in. NEVER report its outputs as model results."""
 

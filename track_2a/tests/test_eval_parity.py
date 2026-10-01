@@ -90,6 +90,23 @@ def test_bootstrap_zero_omits_ci():
     assert "spearman_lo" not in lang and "spearman_hi" not in lang
 
 
+def test_nan_serialized_as_null_with_reason(tmp_path):
+    """Constant predictions -> undefined correlation -> null + reason."""
+    from splitalign import guard
+    from splitalign.evaluate import evaluate_predictions, _dump
+    from splitalign.fetch_data import load_gold_items
+    items = load_gold_items("dev/val", "de")[:2]
+    recs = [{"id": it["id"], "text_a": it["text_a"], "text_b": it["text_b"],
+             "labels_a": [1.0] * len(it["labels_a"]),
+             "labels_b": [1.0] * len(it["labels_b"])} for it in items]
+    r = evaluate_predictions(recs, guard.gold_path("dev/val", "de"), "de",
+                             n_resamples=0)
+    d = _dump(r)
+    assert d["spearman"] is None
+    assert "invalid_reason" in d
+    json.dumps(d)  # must be standards-compliant JSON (no NaN literal)
+
+
 def test_coverage_reported(tmp_path):
     """Coverage fields expose incomplete prediction sets."""
     from splitalign import guard

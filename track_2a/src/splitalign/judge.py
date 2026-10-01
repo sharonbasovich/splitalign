@@ -36,6 +36,7 @@ class Judge:
     seed: int = 0
     max_repairs: int = 1
     unparseable_similarity: int = 0
+    budget: object = None       # ApiBudget | None — caps NEW calls only
 
     # -- low level ----------------------------------------------------------
     def _invoke(self, *, kind: str, messages: list[dict],
@@ -53,6 +54,8 @@ class Judge:
                             messages=messages, result=None, ok=True,
                             error=None, cached=True)
             return hit["text"], True, None
+        if self.budget is not None:
+            self.budget.begin_request()  # raises BudgetExceeded at the cap
         try:
             res = self.client.complete(messages, max_tokens=max_tokens,
                                        temperature=0.0, seed=self.seed)
@@ -64,6 +67,8 @@ class Judge:
         self.logger.log(split=self.split, item_id=self.item_id, kind=kind,
                         messages=messages, result=res, ok=True,
                         error=None, cached=False)
+        if self.budget is not None:
+            self.budget.charge(res)  # may raise BudgetExceeded post-call
         self.cache.put(key, {"text": res.text, "model": res.model,
                              "backend": res.backend})
         return res.text, False, res
