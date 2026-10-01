@@ -5,9 +5,11 @@ Hack Apertus Online 2026 · Track 2A (UZH SwissGov-RSD) · Team Waterloo Agent L
 Repository: https://github.com/sharonbasovich/splitalign · Code license: Apache-2.0
 Report license: CC-BY-4.0 · Prediction labels: CDLA-Permissive-2.0 over CC-BY-4.0 source texts
 
-**Status: exploratory.** Apertus SplitAlign results below are measured on 30 dev/val
-documents (10 per language). The matched re-implemented-baseline comparison is pending
-(see Results); no comparative performance claim is made until matched-ID evidence exists.
+**Status: exploratory, baseline incomplete.** Apertus SplitAlign results below are
+measured on 30 dev/val documents (10 per language). The re-implemented whole-document
+baseline was declared in the run manifest but produced no output in that run, so no
+matched same-ID Apertus baseline exists. An offline same-ID context against published
+encoder predictions is reported with paired uncertainty; it supports no win claim.
 
 ## 1. Summary
 
@@ -90,16 +92,49 @@ Run `20261001T211451Z-8de1aab7` — backend `apertus`, model `swiss-ai/Apertus-v
 |---|---|---|---|---|
 | SplitAlign | 0.254 | 0.267 | 0.224 | **0.248** |
 
-Usage: 30/30 planned items completed; 97 new API requests, 72,624 new tokens
-(payload-identical cache reuse from prior bounded runs; cap 500/600k not hit).
-Bootstrap CIs omitted (n_resamples=0). The matched baseline comparison is
-pending an authorized bounded run; earlier pre-fix diagnostics (including a
-−0.023 figure and an all-NaN baseline file) are quarantined in
-`results/runs/legacy-pre-runscope/` and are not current results.
+Usage: 30/30 planned items completed; 97 new API requests, 72,624 new tokens,
+158.9 s, on top of payload-identical cache hits from the earlier partial run
+(cap 500/600k not hit in this run). Bootstrap CIs omitted (n_resamples=0).
+Run artifacts: [`results/runs/20261001T211451Z-8de1aab7/`](https://github.com/sharonbasovich/splitalign/tree/main/track_2a/results/runs/20261001T211451Z-8de1aab7).
 
-For reference only (paper prior work, NOT our measurements): author-prompted LLM
-predictions ≈ −0.9 macro Spearman, DiffAlign (mmBERT) 18.6, sentence-label
-oracle 56.4 — oracles are upper bounds, not deployable baselines.
+History (not current results): the first bounded run (`legacy-pre-runscope`,
+pre-fix shared cap) completed 24/30 docs (DE 10 / FR 10 / IT 4) at 499
+requests / 600,360 tokens before the token cap; earlier 3-doc diagnostics
+(a −0.023 figure, an all-NaN baseline file) are quarantined in
+`results/runs/legacy-pre-runscope/`.
+
+**Baseline status: incomplete.** `manifest.json` of the run declares `baseline`
+intended IDs, but no baseline predictions or summary were produced in that scope
+(`viewer/evidence.js` marks it PARTIAL for this reason). No matched
+whole-document Apertus baseline number exists and none is estimated.
+
+### 5.1 Offline same-ID context vs published encoder predictions (no API calls)
+
+`scripts/encoder_context_dev.py` scores the authors' precomputed DEV
+predictions (upstream commit `1807a42`, `data/evaluation/encoder_predictions/dev/`,
+every ID validated against our dev manifest, files not redistributed — URLs and
+sha256 in [`results/encoder_context/`](https://github.com/sharonbasovich/splitalign/tree/main/track_2a/results/encoder_context))
+on exactly the same 30 IDs with the same metric code. Comparator policy was fixed
+before looking: EuroBERT-210m is the preregistered reference; all four mmBERT
+parallel DiffAlign variants are context. Paired = document-level paired bootstrap
+of the strict-macro difference (SplitAlign − system), B = 2000, seed 0.
+
+| System (same 30 IDs) | de | fr | it | Strict macro | Paired diff, 95% CI |
+|---|---|---|---|---|---|
+| SplitAlign (this run) | 0.254 | 0.267 | 0.224 | 0.248 | — |
+| EuroBERT-210m DiffAlign (reference) | 0.055 | 0.196 | 0.198 | 0.150 | +0.099 [−0.008, +0.184] |
+| mmBERT parallel_en-de | 0.180 | 0.230 | 0.266 | 0.225 | +0.023 [−0.073, +0.102] |
+| mmBERT parallel_en-sw | 0.170 | 0.228 | 0.271 | 0.223 | +0.025 [−0.070, +0.104] |
+| mmBERT parallel_en-de-fr-it | 0.199 | 0.243 | 0.316 | 0.253 | −0.004 [−0.103, +0.077] |
+| mmBERT parallel_all_1epoch | 0.206 | 0.243 | 0.299 | 0.249 | −0.001 [−0.095, +0.084] |
+
+Reading: SplitAlign is numerically above the preregistered EuroBERT reference on
+these 30 documents, but the paired 95% interval includes zero; against the
+stronger mmBERT variants the difference is indistinguishable from zero. This is
+**no evidence of improvement** over published encoders, and same-ID subset
+figures are not comparable to whole-dev (168 docs/lang) numbers. Prior-work
+figures from the dataset paper are not reproduced here; see the upstream
+repository for the authors' reported results.
 
 ## 6. Limitations
 
@@ -116,8 +151,13 @@ oracle 56.4 — oracles are upper bounds, not deployable baselines.
 
 ## 7. Reproducibility
 
-- Commit: see `results/runs/*/manifest.json` and git history (results run at
-  7ad62c3..8480423).
+- Code commit for THIS report: see the repository tag/commit on the submission
+  form. The 30-doc run manifest predates source-commit recording: its code
+  state lies in `7ad62c3..8480423` per git history and may have included
+  then-uncommitted local fixes; the field is left null rather than invented.
+  Every new run now records `source.commit`, `source.dirty`, package and
+  prompt versions, gold-file sha256 per language, score config and CLI caps
+  in `manifest.json`.
 - `make run` (root) → Docker build + `pipeline --backend mock --limit 3` on a
   clean checkout; real backend via `SPLITALIGN_BACKEND=apertus` +
   `APERTUS_API_KEY`/`APERTUS_API_BASE`/`APERTUS_MODEL` env vars — contradictory
@@ -125,7 +165,12 @@ oracle 56.4 — oracles are upper bounds, not deployable baselines.
 - Seeds: `--seed 0` everywhere; `temperature=0`; deterministic mock; payload-
   keyed cache makes reruns bit-identical for identical prompts.
 - Evidence viewer: `track_2a/viewer/` (static, bilingual, per-token heat maps
-  with real-vs-mock labels and provenance banner).
+  with real-vs-mock labels). `export-viewer` requires an explicit `--run` and
+  embeds run id, intended vs produced modes, completed/intended counts,
+  coverage, cap/partial status and matched-ID info; the newest run is never
+  promoted implicitly.
+- Offline encoder context: `PYTHONPATH=src python scripts/encoder_context_dev.py
+  --run results/runs/<id>` (dev files only, no model access).
 
 ## 8. AI-assistance disclosure
 

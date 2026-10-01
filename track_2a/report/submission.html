@@ -73,34 +73,52 @@ punctuation filter and <code>list_to_drop.txt</code> exclusion (reported both wa
 All scoring code is <b>original Apache-2.0</b> written from the metric specification —
 no vendored upstream code (upstream ships no repo-level license).</p>
 
-<h2>4&nbsp; Evaluation — dev/val, 10 documents/language (exploratory)</h2>
+<h2>4&nbsp; Evaluation — dev/val, 10 documents/language (exploratory; baseline incomplete)</h2>
+<p>Run <code>20261001T211451Z-8de1aab7</code>: 30/30 planned SplitAlign items, 97 new
+requests / 72.6k new tokens / 159 s on top of cache hits from an earlier partial run
+(24/30 docs, 499 requests / 600k tokens, token cap hit). Strict macro Spearman = mean over
+de/fr/it, null if any language is undefined; nonfinite values serialize as JSON null with
+explicit reasons. <b>The re-implemented whole-document Apertus baseline was declared in the
+run manifest but produced no output in this scope, so no matched same-ID Apertus baseline
+exists</b> (the viewer marks the run PARTIAL). Earlier pre-fix diagnostics are quarantined
+in <code>results/runs/legacy-pre-runscope/</code>; mock outputs are plumbing checks only.</p>
+<p><b>Offline same-ID context</b> (<code>scripts/encoder_context_dev.py</code>, no API calls):
+the dataset authors' published DEV encoder predictions (upstream commit <code>1807a42</code>,
+<code>data/evaluation/encoder_predictions/dev/</code>; every ID validated against our dev
+manifest; files not redistributed — URLs/sha256 in <code>results/encoder_context/</code>)
+scored on exactly the same 30 IDs with the same metric code. Comparator fixed in advance:
+EuroBERT-210m reference, all four mmBERT parallel DiffAlign variants as context. Paired =
+document-level paired bootstrap of the strict-macro difference (SplitAlign − system), B=2000.</p>
 <table>
-<tr><th>Method</th><th>de</th><th>fr</th><th>it</th><th>Strict macro Spearman</th></tr>
-<tr><td>SplitAlign (Apertus-8B)</td><td>0.254</td><td>0.267</td><td>0.224</td><td><b>0.248</b></td></tr>
+<tr><th>System (same 30 dev/val IDs)</th><th>de</th><th>fr</th><th>it</th><th>Strict macro</th><th>Paired diff [95% CI]</th></tr>
+<tr><td>SplitAlign (Apertus-8B, this run)</td><td>0.254</td><td>0.267</td><td>0.224</td><td>0.248</td><td>—</td></tr>
+<tr><td>EuroBERT-210m DiffAlign (reference)</td><td>0.055</td><td>0.196</td><td>0.198</td><td>0.150</td><td>+0.099 [−0.008, +0.184]</td></tr>
+<tr><td>mmBERT parallel_en-de</td><td>0.180</td><td>0.230</td><td>0.266</td><td>0.225</td><td>+0.023 [−0.073, +0.102]</td></tr>
+<tr><td>mmBERT parallel_en-sw</td><td>0.170</td><td>0.228</td><td>0.271</td><td>0.223</td><td>+0.025 [−0.070, +0.104]</td></tr>
+<tr><td>mmBERT parallel_en-de-fr-it</td><td>0.199</td><td>0.243</td><td>0.316</td><td>0.253</td><td>−0.004 [−0.103, +0.077]</td></tr>
+<tr><td>mmBERT parallel_all_1epoch</td><td>0.206</td><td>0.243</td><td>0.299</td><td>0.249</td><td>−0.001 [−0.095, +0.084]</td></tr>
 </table>
-<p>Run <code>20261001T211451Z-8de1aab7</code>: 30/30 planned items, 97 new requests /
-72.6k new tokens under the shared cap. The primary macro is strict — null if any
-required language is missing or undefined (all three finite here); nonfinite values
-serialize as JSON null with explicit reasons, never bare NaN. The matched
-same-ID baseline comparison is pending an authorized bounded run; earlier pre-fix
-diagnostics are quarantined in <code>results/runs/legacy-pre-runscope/</code>.
-Mock-backend outputs (<code>MOCK-NOT-APERTUS</code>) are plumbing validations only —
-never model results.</p>
-<div class="warn"><b>Honesty note.</b> These are exploratory dev-only figures.
-No comparative or held-out performance claim is made; the constant-output failure
-mode of prompt baselines is treated as an informative result, not a success.</div>
+<div class="warn"><b>Honesty note.</b> Exploratory dev-only figures on a 30-document subset:
+numerically above the preregistered EuroBERT reference but the paired CI includes zero, and
+indistinguishable from the stronger mmBERT variants — <b>no improvement over published encoders
+is claimed</b>, no held-out claim is made, and subset figures are not comparable to whole-dev
+(168 docs/lang) numbers. Paper prior-work figures are not reproduced here.</div>
 
 <div class="cols"><div>
 <h2>5&nbsp; Reproducibility</h2>
-<p>Repo <code>sharonbasovich/splitalign</code> (public). Root <code>make run</code>
+<p>Repo <code>github.com/sharonbasovich/splitalign</code> (public); exact code commit is
+given on the submission form. Root <code>make run</code>
 builds Docker and runs a mock pipeline on a clean checkout; real runs set
 <code>SPLITALIGN_BACKEND=apertus</code> + <code>APERTUS_*</code> env vars
 (contradictory config fails closed). Every run writes an immutable
 <code>results/runs/&lt;ts-id&gt;/</code> scope — predictions, intended-ID manifest,
 details, redacted call log, per-mode and matched-ID evals — committed to git.
-Seed 0 throughout; payload-keyed cache gives bit-identical reruns. A static
-bilingual evidence viewer (<code>track_2a/viewer/</code>) shows aligned spans,
-per-token heat maps and omissions/additions with real-vs-mock provenance banners.</p>
+Seed 0 throughout; payload-keyed cache gives bit-identical reruns. New run manifests
+record source commit/dirty state, prompt and package version, gold sha256, score config
+and caps (the 30-doc run predates this field: code state <code>7ad62c3..8480423</code>,
+left null, not back-filled). The static bilingual viewer (<code>track_2a/viewer/</code>)
+is exported from an explicit <code>--run</code> only and shows run id, intended vs produced
+modes, coverage and cap/partial status with real-vs-mock banners.</p>
 
 </div><div>
 <h2>6&nbsp; Limitations</h2>
@@ -114,9 +132,8 @@ held-out integrity is a development guard, not a proof.</p>
 <p class="refs">Strategy brief and implementation produced by AI assistants
 (reviewer session + Devin); S. Basovich supplied goals, approvals and credential
 provisioning. Sources: Hack Apertus Track 2A brief; ZurichNLP/SwissGov-RSD;
-HF dataset card (CC-BY-4.0); CSCS Inference API docs; swiss-ai/Apertus-v1.5-8B.
-Paper prior-work figures (not our measurements): author-prompted LLM ≈ &minus;0.9
-macro Spearman, DiffAlign 18.6, sentence-label oracle 56.4.</p>
+HF dataset card (CC-BY-4.0); CSCS Inference API docs; swiss-ai/Apertus-v1.5-8B;
+published dev encoder predictions from ZurichNLP/SwissGov-RSD@1807a42 (context only).</p>
 
 </body>
 </html>
