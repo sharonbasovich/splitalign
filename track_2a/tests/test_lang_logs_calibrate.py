@@ -192,6 +192,25 @@ def test_inference_provenance_is_not_exporter_version():
     assert mixed["prompt_version"] is None and mixed["conflict"] == {"prompt_version": ["v1", "v2"]}
 
 
+def test_inference_provenance_manifest_vs_items_disagreement_is_a_conflict():
+    # Regression: a manifest value that disagrees with the per-item records
+    # must surface in ``conflict`` (not just null the headline field).
+    items = {"splitalign": [{"id": "a", "provenance": {
+        "prompt_version": "splitalign-prompts-v1", "model": "m"}}]}
+    inf = inference_provenance(
+        items, {"run_id": "r", "prompt_version": "splitalign-prompts-v2-lang",
+                "model": "m"})
+    assert inf["prompt_version"] is None
+    assert inf["conflict"] == {"prompt_version": [
+        "splitalign-prompts-v1", "splitalign-prompts-v2-lang"]}
+    assert inf["model"] == "m"
+    # manifest-only value (items unrecorded) is adopted, no conflict
+    only_man = inference_provenance({"m": [{"id": "x"}]},
+                                    {"prompt_version": "splitalign-prompts-v1"})
+    assert only_man["prompt_version"] == "splitalign-prompts-v1"
+    assert only_man["conflict"] == {}
+
+
 def test_export_viewer_keeps_exporter_and_inference_separate(mock_env):
     """A re-export of an existing run must not relabel its prompt version."""
     assert _run.cmd_pipeline(_args(lang="de")) == 0

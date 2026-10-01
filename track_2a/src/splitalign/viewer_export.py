@@ -25,11 +25,11 @@ def inference_provenance(items_by_mode: dict[str, list[dict]],
                 if prov.get(k) is not None:
                     seen[k].add(prov[k])
     man = manifest or {}
-    out: dict = {}
-    for k, vals in seen.items():
+    for k in seen:
         if man.get(k) is not None:
-            vals = vals | {man[k]}
-        out[k] = sorted(vals)[0] if len(vals) == 1 else None
+            seen[k].add(man[k])
+    out: dict = {k: sorted(v)[0] if len(v) == 1 else None
+                 for k, v in seen.items()}
     out["conflict"] = {k: sorted(v) for k, v in seen.items() if len(v) > 1}
     out["recorded_from"] = ("manifest+items" if man else "items") \
         if any(seen.values()) or man else "none"
