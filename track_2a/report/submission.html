@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>SplitAlign — Method Description (Track 2A)</title>
+<style>
+  @page { size: A4; margin: 13mm 13mm; }
+  body { font: 8.5pt/1.26 "Helvetica Neue", Arial, sans-serif; color: #1a1a1a;
+         max-width: 180mm; margin: 0 auto; }
+  h1 { font-size: 15pt; margin: 0 0 1mm; }
+  .sub { color:#555; font-size:8.6pt; margin-bottom:3mm; }
+  h2 { font-size: 10.5pt; margin: 3mm 0 1mm; border-bottom: 0.6pt solid #999;
+       padding-bottom: .6mm; }
+  p { margin: 0 0 1.2mm; text-align: justify; }
+  ul { margin: 0 0 1.2mm 4.5mm; padding: 0; }
+  li { margin-bottom: .5mm; }
+  table { border-collapse: collapse; margin: 1mm 0 2mm; font-size: 8.4pt; }
+  th, td { border: 0.5pt solid #bbb; padding: 1.2mm 2.4mm; text-align: left; }
+  th { background: #f0f0f0; }
+  code { font-family: "SF Mono", Menlo, monospace; font-size: 8.4pt; }
+  .cols { display: flex; gap: 5mm; } .cols > div { flex: 1; }
+  .warn { background: #fdf3e3; border-left: 2.5pt solid #d98c00;
+          padding: 1.6mm 2.4mm; margin: 1.5mm 0; }
+  .refs { font-size: 8.2pt; color: #333; }
+</style>
+</head>
+<body>
+
+<h1>SplitAlign: Token-Level Cross-Lingual Difference via Aligned LLM Judgments</h1>
+<div class="sub">Hack Apertus Online 2026 &middot; Track 2A UZH SwissGov-RSD &middot;
+Waterloo Agent Lab &middot; Sharon Basovich &middot;
+github.com/sharonbasovich/splitalign &middot; Apache-2.0 code / CDLA-Permissive-2.0 predictions / CC-BY-4.0 report</div>
+
+<h2>1&nbsp; Method</h2>
+<p><b>SplitAlign</b> decomposes token-level cross-lingual semantic-difference scoring
+(de/fr/it Swiss administrative document pairs) into auditable stages, preserving the
+original whitespace-token indices end-to-end so outputs land exactly on the official
+token label space:</p>
+<ul>
+<li><b>Segment</b> — sentence/paragraph segmentation that records each segment's token offset.</li>
+<li><b>Align</b> — monotone dynamic-programming alignment of cross-lingual sentences with
+1:0, 0:1, 1:1, 1:2 and 2:1 (merge) operations, scored by batched Apertus similarity
+under a <b>banded candidate policy</b> (|i/(n&minus;1)&nbsp;&minus;&nbsp;j/(m&minus;1)| &le; 0.2 or &plusmn;2 absolute):
+far-off-diagonal pairs score 0 without an API call — measured 304,968&nbsp;&rarr;&nbsp;108,260
+candidate pairs (35%) on the dev corpus.</li>
+<li><b>Judge</b> — short structured-JSON Apertus judgments on aligned pairs: graded semantic
+difference 0&ndash;5 plus verbatim differing spans, with repair/salvage for malformed
+responses and explicit handling of repeated tokens, offsets, punctuation, boilerplate
+and end-of-document omissions.</li>
+<li><b>Score</b> — sentence scores plus span boosts projected onto the exact token arrays;
+asymmetric additions/omissions get explicit labels.</li>
+</ul>
+<p>A whole-document token-annotation prompt serves as the <b>re-implemented baseline</b>
+(same response contract; not the upstream template).</p>
+
+<h2>2&nbsp; Apertus use (required component)</h2>
+<p>CSCS hosted inference <code>api.inference.cscs.ch/v1</code>,
+model <code>swiss-ai/Apertus-v1.5-8B</code> (non-thinking), temperature 0, fixed seed.
+Apertus performs both the similarity scoring and the graded judgments — no fine-tuning
+or hidden-state access is assumed. Every call is cached on
+backend|model|prompt-version|kind|split|item|payload keys and logged redacted
+(hashes, token counts, latency only). A shared budget caps NEW requests <i>and</i>
+tokens across both methods at the <b>outbound-attempt boundary</b>, so retries and
+failures cannot bypass the cap; identical cache hits are free.</p>
+
+<h2>3&nbsp; Data, licensing, and the held-out firewall</h2>
+<p>Only <code>dev/train</code> and <code>dev/val</code> of ZurichNLP/swissgov-rsd
+(CC-BY-4.0 per its Hugging Face card) are fetched — at a pinned commit through an
+allowlist + fail-closed guard (disallowed splits/paths/symlinks and unmanifested IDs
+abort). The test split is never fetched, read, or evaluated in this build. Metrics
+follow the official token-level Spearman convention including its &minus;1
+punctuation filter and <code>list_to_drop.txt</code> exclusion (reported both ways).
+All scoring code is <b>original Apache-2.0</b> written from the metric specification —
+no vendored upstream code (upstream ships no repo-level license).</p>
+
+<h2>4&nbsp; Evaluation — dev/val, 10 documents/language (exploratory)</h2>
+<table>
+<tr><th>Method</th><th>de</th><th>fr</th><th>it</th><th>Strict macro Spearman</th></tr>
+<tr><td>SplitAlign (Apertus-8B)</td><td>0.254</td><td>0.267</td><td>0.224</td><td><b>0.248</b></td></tr>
+</table>
+<p>Run <code>20261001T211451Z-8de1aab7</code>: 30/30 planned items, 97 new requests /
+72.6k new tokens under the shared cap. The primary macro is strict — null if any
+required language is missing or undefined (all three finite here); nonfinite values
+serialize as JSON null with explicit reasons, never bare NaN. The matched
+same-ID baseline comparison is pending an authorized bounded run; earlier pre-fix
+diagnostics are quarantined in <code>results/runs/legacy-pre-runscope/</code>.
+Mock-backend outputs (<code>MOCK-NOT-APERTUS</code>) are plumbing validations only —
+never model results.</p>
+<div class="warn"><b>Honesty note.</b> These are exploratory dev-only figures.
+No comparative or held-out performance claim is made; the constant-output failure
+mode of prompt baselines is treated as an informative result, not a success.</div>
+
+<div class="cols"><div>
+<h2>5&nbsp; Reproducibility</h2>
+<p>Repo <code>sharonbasovich/splitalign</code> (public). Root <code>make run</code>
+builds Docker and runs a mock pipeline on a clean checkout; real runs set
+<code>SPLITALIGN_BACKEND=apertus</code> + <code>APERTUS_*</code> env vars
+(contradictory config fails closed). Every run writes an immutable
+<code>results/runs/&lt;ts-id&gt;/</code> scope — predictions, intended-ID manifest,
+details, redacted call log, per-mode and matched-ID evals — committed to git.
+Seed 0 throughout; payload-keyed cache gives bit-identical reruns. A static
+bilingual evidence viewer (<code>track_2a/viewer/</code>) shows aligned spans,
+per-token heat maps and omissions/additions with real-vs-mock provenance banners.</p>
+
+</div><div>
+<h2>6&nbsp; Limitations</h2>
+<p>Uniform token scores per aligned sentence except reported spans; monotone
+alignment only (no reordering); banded candidates never score far-off-diagonal
+pairs; judgments may omit end-of-document differences (handled, logged);
+held-out integrity is a development guard, not a proof.</p>
+
+</div></div>
+<h2>7&nbsp; AI-assistance disclosure &amp; references</h2>
+<p class="refs">Strategy brief and implementation produced by AI assistants
+(reviewer session + Devin); S. Basovich supplied goals, approvals and credential
+provisioning. Sources: Hack Apertus Track 2A brief; ZurichNLP/SwissGov-RSD;
+HF dataset card (CC-BY-4.0); CSCS Inference API docs; swiss-ai/Apertus-v1.5-8B.
+Paper prior-work figures (not our measurements): author-prompted LLM ≈ &minus;0.9
+macro Spearman, DiffAlign 18.6, sentence-label oracle 56.4.</p>
+
+</body>
+</html>
