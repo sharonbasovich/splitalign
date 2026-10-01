@@ -33,6 +33,7 @@
 
     const msel = $("modeSel");
     modes.forEach((m) => msel.add(new Option(m, m)));
+    msel.value = state.mode;  // keep selector in sync with the initial mode
     msel.addEventListener("change", () => { state.mode = msel.value; state.item = 0; state.pair = 0; render(); });
 
     $("labelSel").addEventListener("change", (e) => { state.labels = e.target.value; render(); });

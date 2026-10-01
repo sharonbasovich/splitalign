@@ -27,8 +27,11 @@ For real Apertus inference see `track_2a/README.md` (env vars
 
 ## Integrity notes
 
-- Held-out splits of SwissGov-RSD are fenced off by `splitalign.guard`;
-  only `dev/train` + `dev/val` are present or reachable.
-- Evaluation uses the official metric via byte-pinned vendored modules
-  (see `track_2a/src/vendor/swissgov_rsd/VENDORED.md`).
+- Held-out splits of SwissGov-RSD are fenced off by `splitalign.guard` —
+  a fail-closed development guard (path allowlist + dev-ID manifest +
+  symlink checks); only `dev/train` + `dev/val` are present or reachable.
+- Evaluation implements the documented official token-label metric with
+  original Apache-2.0 code (`splitalign/metricspec.py`) — no upstream
+  source is vendored (upstream ships no repository-level license).
+  Parity vs the spec + scipy is tested in `tests/test_eval_parity.py`.
 - All artifacts label `mock` vs `apertus` provenance explicitly.

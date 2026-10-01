@@ -6,10 +6,11 @@ Operations (per the SplitAlign design):
 * ``1:0`` — source sentence omitted on the target side
 * ``0:1`` — target sentence added (no source counterpart)
 * ``1:2`` — one source sentence split across two target sentences
+* ``2:1`` — two source sentences merged into one target sentence
 
 Costs come from a similarity matrix sim[i][j] in [0, 1]. Deletion/insertion
 penalties and the boilerplate guard are calibratable. Ties resolve
-deterministically: 1:1 > 1:2 > 1:0 > 0:1.
+deterministically: 1:1 > 1:2 > 2:1 > 1:0 > 0:1.
 """
 from __future__ import annotations
 
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 
 OP_MATCH = "1:1"
 OP_SPLIT = "1:2"
+OP_MERGE = "2:1"
 OP_OMIT = "1:0"
 OP_ADD = "0:1"
 
@@ -36,6 +38,7 @@ class AlignConfig:
     omit_cost: float = 0.55        # penalty for 1:0
     add_cost: float = 0.55         # penalty for 0:1
     split_bias: float = 0.20       # extra cost for 1:2 vs match+add
+    merge_bias: float = 0.20       # extra cost for 2:1 vs match+omit
     boilerplate_floor: float = 0.15  # below this sim, matching is discouraged
     boilerplate_penalty: float = 0.35
 
@@ -67,12 +70,16 @@ def align(sim: list[list[float]], cfg: AlignConfig | None = None) -> list[AlignO
                 s12 = (sim[i - 1][j - 2] + sim[i - 1][j - 1]) / 2.0
                 c = (1.0 - s12) + cfg.split_bias
                 cands.append((D[i - 1][j - 2] + c, (i - 1, j - 2, OP_SPLIT, s12)))
+            if i >= 2 and j:
+                s21 = (sim[i - 2][j - 1] + sim[i - 1][j - 1]) / 2.0
+                c = (1.0 - s21) + cfg.merge_bias
+                cands.append((D[i - 2][j - 1] + c, (i - 2, j - 1, OP_MERGE, s21)))
             if i:
                 cands.append((D[i - 1][j] + cfg.omit_cost, (i - 1, j, OP_OMIT, 0.0)))
             if j:
                 cands.append((D[i][j - 1] + cfg.add_cost, (i, j - 1, OP_ADD, 0.0)))
             # deterministic tie-break: order above defines preference
-            best = min(cands, key=lambda c: (c[0], [OP_MATCH, OP_SPLIT, OP_OMIT, OP_ADD].index(c[1][2])))
+            best = min(cands, key=lambda c: (c[0], [OP_MATCH, OP_SPLIT, OP_MERGE, OP_OMIT, OP_ADD].index(c[1][2])))
             D[i][j], back[i][j] = best
 
     ops: list[AlignOp] = []
@@ -83,6 +90,8 @@ def align(sim: list[list[float]], cfg: AlignConfig | None = None) -> list[AlignO
             ops.append(AlignOp(op, pi, pi + 1, pj, pj + 1, s))
         elif op == OP_SPLIT:
             ops.append(AlignOp(op, pi, pi + 1, pj, pj + 2, s))
+        elif op == OP_MERGE:
+            ops.append(AlignOp(op, pi, pi + 2, pj, pj + 1, s))
         elif op == OP_OMIT:
             ops.append(AlignOp(op, pi, pi + 1, -1, -1, 0.0))
         else:

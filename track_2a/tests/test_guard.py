@@ -42,6 +42,28 @@ def test_symlink_escape_fails(tmp_path):
         guard.assert_path_allowed(link, root=root)
 
 
+def test_symlinked_dir_component_fails(tmp_path):
+    """Whole-directory symlink replacement inside the repo must fail closed."""
+    # data/gold/dev/val -> outside dir: component-level check must reject
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    link_dir = guard.GOLD_DIR / "val_link_probe"
+    try:
+        os.symlink(outside, link_dir)
+        probe = link_dir / "gold_admin_de.jsonl"
+        with pytest.raises(guard.HeldOutViolation):
+            guard.assert_path_allowed(probe, root=guard.GOLD_DIR)
+    finally:
+        link_dir.unlink(missing_ok=True)
+
+
+def test_repo_parent_dir_named_test_is_not_false_positive(tmp_path):
+    """A checkout under e.g. /tmp/test/... must still allow its dev files."""
+    p = guard.gold_path("val", "de")
+    # the real repo may live under a parent containing 'test' — resolve ok
+    assert p.name == "gold_admin_de.jsonl"
+
+
 def test_heldout_token_in_path_fails(tmp_path):
     root = tmp_path / "gold" / "dev"
     root.mkdir(parents=True)

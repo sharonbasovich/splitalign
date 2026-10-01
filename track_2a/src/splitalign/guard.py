@@ -5,9 +5,10 @@ evaluated by this codebase. Every data access goes through this module so the
 policy is enforced in exactly one place:
 
 * path allowlist — only committed files under ``data/gold/dev/{train,val}``
-  matching ``gold_admin_{de,fr,it}[_short].jsonl`` may be opened;
+  matching ``gold_admin_{de,fr,it}.jsonl`` may be opened;
 * symlink safety — the resolved real path must stay inside the allowlisted
-  directories;
+  directories, and no component of the repo-internal path may itself be a
+  symlink (guards against whole-directory symlink replacement);
 * ID manifest — every record loaded must carry an ID listed in
   ``data/manifest/dev_ids.json`` (written at fetch time);
 * no bypass — there is intentionally no ``--final-run``/env escape hatch.
@@ -54,9 +55,21 @@ def assert_path_allowed(path: Path, root: Path = GOLD_DIR) -> Path:
     except OSError as exc:  # pragma: no cover - defensive
         raise HeldOutViolation(f"cannot resolve path {path}: {exc}") from exc
 
-    parts = _parts_lower(real.relative_to(real.anchor)) if real.is_absolute() else _parts_lower(real)
-    if parts & HELDOUT_TOKENS:
-        raise HeldOutViolation(f"held-out path component in {path}")
+    # Repo-internal components only: a checkout rooted at e.g. /tmp/test
+    # must not trip the held-out name check on its parent directories.
+    try:
+        rel = path.absolute().relative_to(TRACK_DIR)
+    except ValueError:
+        rel = None
+    if rel is not None:
+        if {p.lower() for p in rel.parts} & HELDOUT_TOKENS:
+            raise HeldOutViolation(f"held-out path component in {path}")
+        cur = TRACK_DIR
+        for part in rel.parts:
+            cur = cur / part
+            if cur.is_symlink():
+                raise HeldOutViolation(
+                    f"symlinked path component inside repo: {cur}")
     if real_root != real and real_root not in real.parents:
         raise HeldOutViolation(f"path escapes dev allowlist: {path}")
     return real
@@ -74,7 +87,7 @@ def normalize_split(split: str) -> str:
     return aliases[s]
 
 
-def gold_path(split: str, lang: str, short: bool = False) -> Path:
+def gold_path(split: str, lang: str) -> Path:
     """Resolve an allowlisted gold file path (never opens held-out data)."""
     norm = normalize_split(split)
     if norm == "dev":
@@ -82,11 +95,13 @@ def gold_path(split: str, lang: str, short: bool = False) -> Path:
     if lang not in ALLOWED_LANGS:
         raise HeldOutViolation(f"unknown language '{lang}'")
     sub = norm.split("/", 1)[1]
-    name = f"gold_admin_{lang}{'_short' if short else ''}.jsonl"
-    return assert_path_allowed(GOLD_DIR / sub / name)
+    return assert_path_allowed(GOLD_DIR / sub / f"gold_admin_{lang}.jsonl")
 
 
 def load_manifest(path: Path = MANIFEST_PATH) -> set[str]:
+    # The manifest is a local mutable file — a fail-closed development
+    # guard, not an integrity proof (see report: threat-model section).
+    assert_path_allowed(path, root=DATA_DIR)
     if not path.exists():
         raise HeldOutViolation(
             f"dev-ID manifest missing at {path}; run `python -m splitalign.run fetch-data`")

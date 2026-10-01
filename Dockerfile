@@ -6,7 +6,7 @@ RUN pip install --no-cache-dir -r /app/requirements.txt -r /app/requirements-dev
 
 COPY track_2a /app/track_2a
 WORKDIR /app/track_2a
-ENV PYTHONPATH=/app/track_2a/src:/app/track_2a/src/vendor/swissgov_rsd
+ENV PYTHONPATH=/app/track_2a/src
 # All produced artifacts (results/, viewer/) land on the bind-mounted /out.
 ENV SPLITALIGN_OUT=/out
 

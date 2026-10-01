@@ -147,7 +147,8 @@ def cmd_evaluate(args) -> int:
         raise SystemExit("specify --split train or val")
     res = evaluate_split(Path(args.pred), split,
                          n_resamples=args.bootstrap,
-                         prefix=args.prefix)
+                         prefix=args.prefix,
+                         require_full_coverage=args.require_full)
     print(json.dumps(res, indent=2))
     return 0
 
@@ -236,7 +237,9 @@ def _limitations(backend: str) -> list[str]:
     lims = [
         "Sentence-level judgments are mapped to uniform token scores except on reported differing spans — fine-grained in-sentence variation is approximated.",
         "Cross-lingual alignment is monotone; non-monotone reordering is not modelled.",
-        "Only dev/train and dev/val were used; held-out data was never accessed in this build.",
+        "Only dev/train and dev/val were used; the held-out firewall is enforced by this build's guard module.",
+        "The 'baseline' method is our re-implemented whole-document token-annotation prompt (same response contract; not the upstream template).",
+        "Similarity candidates are banded (|i/(n-1) - j/(m-1)| <= 0.2, +/-2 absolute): far-off-diagonal pairs score 0 without an API call.",
     ]
     if backend == "mock":
         lims.insert(0, "MOCK backend: all shown outputs are deterministic lexical heuristics, NOT Apertus inference. Numbers are plumbing validations only.")
@@ -254,7 +257,8 @@ def cmd_pipeline(args) -> int:
         res = evaluate_split(PRED_DIR, split,
                              langs=_langs(args.lang),
                              n_resamples=args.bootstrap,
-                             prefix=f"{mode}_{args.backend}")
+                             prefix=f"{mode}_{args.backend}",
+                             require_full_coverage=args.require_full)
         (RESULTS_DIR / f"eval_{mode}_{args.backend}_{split.replace('/', '_')}.json"
          ).write_text(json.dumps(res, indent=2))
         print(f"[{mode}] macro Spearman: {res['macro_spearman']:.4f}")
@@ -297,6 +301,9 @@ def main(argv=None) -> int:
         p.add_argument("--seed", type=int, default=0)
         p.add_argument("--bootstrap", type=int, default=1000)
         p.add_argument("--cfg", default=None)
+        p.add_argument("--require-full", action="store_true",
+                       help="fail loudly if predictions cover <100% of gold "
+                            "items (default: warn via coverage fields)")
         if name == "predict":
             p.set_defaults(fn=lambda a: _predict(a, "splitalign"))
         elif name == "baseline":
@@ -310,6 +317,8 @@ def main(argv=None) -> int:
     p.add_argument("--pred", required=True)
     p.add_argument("--split", default="val")
     p.add_argument("--bootstrap", type=int, default=1000)
+    p.add_argument("--require-full", action="store_true",
+                   help="fail loudly if predictions cover <100% of gold items")
     p.add_argument("--prefix", default=None,
                    help="prediction file prefix e.g. splitalign_mock")
     p.set_defaults(fn=cmd_evaluate)

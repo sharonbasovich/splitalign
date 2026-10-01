@@ -69,13 +69,24 @@ class Judge:
         return res.text, False, res
 
     # -- similarity matrix --------------------------------------------------
+    # Banded candidate policy: cross-lingual administrative texts are near-
+    # parallel, so a segment pair far off the diagonal never yields a match
+    # that beats the calibrated omit/add costs. We therefore query only
+    # pairs whose normalised positions are close —
+    # | i/max(n-1,1) - j/max(m-1,1) | <= band_width (default 0.2) —
+    # plus an absolute ±2 neighbourhood for short documents. All cells
+    # outside the band are 0.0 without an API call. This bounds calls at
+    # ~O(n*m*band) instead of n*m (worst dev doc: 385 pairs -> ~150).
     def similarity_matrix(self, a_texts: list[str], b_texts: list[str],
-                          batch: int = 20) -> list[list[float]]:
+                          batch: int = 20, band_width: float = 0.2) -> list[list[float]]:
         """n x m matrix of 0..1 similarities via batched pair scoring."""
         n, m = len(a_texts), len(b_texts)
         sim = [[0.0] * m for _ in range(n)]
+        nn, mm = max(n - 1, 1), max(m - 1, 1)
         pairs = [{"i": i, "j": j, "a": a_texts[i], "b": b_texts[j]}
-                 for i in range(n) for j in range(m)]
+                 for i in range(n) for j in range(m)
+                 if abs(i / nn - j / mm) <= band_width
+                 or abs(i * m / n - j) <= 2]
         for k in range(0, len(pairs), batch):
             chunk = pairs[k:k + batch]
             req = prompts.similarity_request(chunk)

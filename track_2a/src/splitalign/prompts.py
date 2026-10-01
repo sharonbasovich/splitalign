@@ -56,6 +56,10 @@ Return ONLY a JSON object:
   "differing_spans": {{"side_a": ["<verbatim span>", ...],
                       "side_b": ["<verbatim span>", ...]}}}}"""
 
+# Re-implemented baseline prompt (our own phrasing of the task's response
+# contract). It is NOT the upstream template: upstream's few-shot prompt
+# has no license attached, so we do not reproduce it. Behaviour compared
+# like-for-like in evals, labelled "re-implemented baseline" in artifacts.
 BASELINE_SYSTEM = (
     "You annotate bilingual document pairs token-by-token. For every token, "
     "rate semantic similarity to the tokens of the other document: "

@@ -17,14 +17,10 @@ from .apertus import CallLogger, client_from_env_or_mock
 from .cache import DiskCache
 from .judge import Judge, Judgment
 from . import prompts
+from .metricspec import (map_label_from_positive_to_negative,
+                         parse_token_labels)
 from .score import ScoreConfig, score_item
 from .segment import segment_text, segment_text_str
-
-VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor" / "swissgov_rsd"
-if str(VENDOR_DIR) not in sys.path:
-    sys.path.insert(0, str(VENDOR_DIR))
-
-from evaluation.utils import map_label_from_positive_to_negative, parse_token_labels  # noqa: E402
 
 
 def predict_item(item: dict, judge: Judge,
@@ -124,7 +120,7 @@ def predict_baseline_item(item: dict, judge: Judge) -> dict:
         text, cached, _ = judge._invoke(
             kind="doc_baseline", messages=msgs,
             payload_for_key={"req": req, "r": repairs}, max_tokens=16384)
-        # parse with the vendored official parser (same semantics as upstream)
+        # parse with the spec-faithful matcher (metricspec.py; Apache-2.0)
         try:
             from .judge import extract_first_json
             data = extract_first_json(text) or {}

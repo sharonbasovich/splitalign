@@ -18,13 +18,12 @@ RAW_BASE = f"https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/{PINNED_CO
 
 ALLOWLIST = {
     # split -> lang -> upstream path under data/evaluation/gold_labels/dev
-    f"gold/dev/{split}/gold_admin_{lang}{short}.jsonl": {
-        "url": f"{RAW_BASE}/data/evaluation/gold_labels/dev/{split}/gold_admin_{lang}{short}.jsonl",
+    f"gold/dev/{split}/gold_admin_{lang}.jsonl": {
+        "url": f"{RAW_BASE}/data/evaluation/gold_labels/dev/{split}/gold_admin_{lang}.jsonl",
         "split": f"dev/{split}",
     }
     for split in ("train", "val")
     for lang in ("de", "fr", "it")
-    for short in ("", "_short")
 }
 
 
@@ -69,9 +68,9 @@ def write_manifest(dest_root: Path = guard.DATA_DIR) -> Path:
     return mp
 
 
-def load_gold_items(split: str, lang: str, short: bool = False) -> list[dict]:
+def load_gold_items(split: str, lang: str) -> list[dict]:
     """The ONLY entrypoint for reading gold data — firewall enforced."""
-    p = guard.gold_path(split, lang, short)
+    p = guard.gold_path(split, lang)
     items = [json.loads(l) for l in p.read_text().splitlines() if l.strip()]
     guard.assert_ids_allowed([it["id"] for it in items])
     for it in items:

@@ -1,24 +1,34 @@
 SplitAlign — Hack Apertus Online 2026, Track 2A (UZH SwissGov-RSD)
 Team: Waterloo Agent Lab — Sharon Basovich
 
-Code: Apache License 2.0 (see LICENSE).
+Code: Apache License 2.0 (see LICENSE). All code in this repository is
+original — no upstream source files are redistributed. The token-label
+parsing/mapping helpers (track_2a/src/splitalign/metricspec.py) are
+implemented from the documented metric specification only.
+
 Technical report: CC-BY-4.0.
-Prediction files produced by this project: CDLA-Permissive-2.0
-  (see track_2a/docs/licenses/CDLA-Permissive-2.0.txt).
+Prediction label files produced by this project: CDLA-Permissive-2.0
+  (see track_2a/docs/licenses/CDLA-Permissive-2.0.txt). The underlying
+  document texts inside prediction records remain under the dataset's
+  CC-BY-4.0 — licenses apply to their respective layers.
 
 Upstream attributions
 ---------------------
-- SwissGov-RSD evaluation code (vendored under
-  track_2a/src/vendor/swissgov_rsd/): MIT License, (c) 2023 University of
-  Zurich, ZurichNLP. Source: https://github.com/ZurichNLP/SwissGov-RSD
-  pinned to commit 1807a42100e742ed03d337c54c4b9ea86995f565.
 - SwissGov-RSD dataset (dev/train + dev/val only, under track_2a/data/):
-  CC-BY-4.0, ZurichNLP. Cite: Wastl, Vamvas & Sennrich, ACL 2026
-  (https://aclanthology.org/2026.acl-long.1437/).
+  CC-BY-4.0 per the Hugging Face dataset card
+  (https://huggingface.co/datasets/ZurichNLP/swissgov-rsd, `license:
+  cc-by-4.0`). Cite: Wastl, Vamvas & Sennrich, ACL 2026
+  (https://aclanthology.org/2026.acl-long.1437/). Source repository:
+  https://github.com/ZurichNLP/SwissGov-RSD pinned to commit
+  1807a42100e742ed03d337c54c4b9ea86995f565 — consulted for the metric
+  specification and data files only; upstream ships no repository-level
+  license, so no upstream code is vendored here.
 - Held-out splits (test/, full/) were never fetched, opened or evaluated
   in this clean build; see track_2a/src/splitalign/guard.py and
-  data/manifest/dev_ids.json. (Scoped to this build only — the technical
-  report keeps a separate historical research-access audit.)
+  data/manifest/dev_ids.json. The dev-ID manifest is a local mutable
+  file — a fail-closed development guard, not an integrity proof.
+  (Scoped to this build only — the technical report keeps a separate
+  historical research-access audit.)
 
 AI assistance disclosure
 ------------------------

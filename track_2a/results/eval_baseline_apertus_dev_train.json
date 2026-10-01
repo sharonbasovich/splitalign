@@ -1,0 +1,17 @@
+{
+  "split": "dev/train",
+  "per_language": {
+    "de": {
+      "lang": "de",
+      "spearman": NaN,
+      "spearman_lo": NaN,
+      "spearman_hi": NaN,
+      "kendall": NaN,
+      "n_tokens": 674,
+      "n_samples": 1,
+      "len_mismatch_a": 0,
+      "len_mismatch_b": 0
+    }
+  },
+  "macro_spearman": NaN
+}

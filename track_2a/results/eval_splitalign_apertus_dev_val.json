@@ -1,0 +1,39 @@
+{
+  "split": "dev/val",
+  "per_language": {
+    "de": {
+      "lang": "de",
+      "spearman": -0.2008535278265389,
+      "spearman_lo": -0.2008535278265389,
+      "spearman_hi": -0.2008535278265389,
+      "kendall": -0.18693555989085386,
+      "n_tokens": 868,
+      "n_samples": 3,
+      "len_mismatch_a": 0,
+      "len_mismatch_b": 0
+    },
+    "fr": {
+      "lang": "fr",
+      "spearman": 0.11493201702856563,
+      "spearman_lo": 0.11493201702856563,
+      "spearman_hi": 0.11493201702856563,
+      "kendall": 0.10062012234784323,
+      "n_tokens": 1007,
+      "n_samples": 3,
+      "len_mismatch_a": 0,
+      "len_mismatch_b": 0
+    },
+    "it": {
+      "lang": "it",
+      "spearman": 0.017155698955465537,
+      "spearman_lo": 0.017155698955465537,
+      "spearman_hi": 0.017155698955465537,
+      "kendall": 0.013496566843127285,
+      "n_tokens": 960,
+      "n_samples": 3,
+      "len_mismatch_a": 0,
+      "len_mismatch_b": 0
+    }
+  },
+  "macro_spearman": -0.02292193728083591
+}

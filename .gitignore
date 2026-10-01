@@ -1,7 +1,9 @@
 __pycache__/
 *.pyc
 out/
-track_2a/results/
+# results artifacts are published (predictions/evals/calibration/details/
+# redacted calls.jsonl); only the inference cache stays local
+track_2a/results/cache/
 .pytest_cache/
 *.egg-info/
 .DS_Store

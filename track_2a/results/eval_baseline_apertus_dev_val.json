@@ -1,0 +1,39 @@
+{
+  "split": "dev/val",
+  "per_language": {
+    "de": {
+      "lang": "de",
+      "spearman": NaN,
+      "spearman_lo": NaN,
+      "spearman_hi": NaN,
+      "kendall": NaN,
+      "n_tokens": 868,
+      "n_samples": 3,
+      "len_mismatch_a": 0,
+      "len_mismatch_b": 0
+    },
+    "fr": {
+      "lang": "fr",
+      "spearman": NaN,
+      "spearman_lo": NaN,
+      "spearman_hi": NaN,
+      "kendall": NaN,
+      "n_tokens": 1007,
+      "n_samples": 3,
+      "len_mismatch_a": 0,
+      "len_mismatch_b": 0
+    },
+    "it": {
+      "lang": "it",
+      "spearman": NaN,
+      "spearman_lo": NaN,
+      "spearman_hi": NaN,
+      "kendall": NaN,
+      "n_tokens": 960,
+      "n_samples": 3,
+      "len_mismatch_a": 0,
+      "len_mismatch_b": 0
+    }
+  },
+  "macro_spearman": NaN
+}

@@ -19,4 +19,4 @@ test: docker-build
 	docker run --rm --entrypoint python $(IMAGE) -m pytest tests -q
 
 fetch-data:
-	PYTHONPATH=src:src/vendor/swissgov_rsd python -m splitalign.run fetch-data
+	PYTHONPATH=src python -m splitalign.run fetch-data

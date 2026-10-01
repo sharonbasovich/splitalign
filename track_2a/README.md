@@ -39,15 +39,16 @@ Missing config fails honestly with the variable names — never a silent mock.
 track_2a/
   Makefile           # docker build + run targets
   data/              # dev/train + dev/val gold only — see data/README.md
-  src/splitalign/    # guard, segment, align, judge, score, evaluate, run, ...
-  src/vendor/        # byte-pinned upstream evaluation modules (MIT)
+  src/splitalign/    # guard, segment, align, judge, score, evaluate,
+                     # metricspec, run, ... (all original Apache-2.0 code)
   tests/             # pytest: firewall, segmentation, DP, scoring, parity
   viewer/            # static bilingual evidence viewer (evidence.js generated)
   docs/              # licenses + report assets
-  results/           # generated predictions, call logs, details (gitignored)
+  results/           # committed predictions, evals, redacted call log
+                     # (only results/cache/ is gitignored)
 ```
 
-## Commands (inside track_2a, `PYTHONPATH=src:src/vendor/swissgov_rsd`)
+## Commands (inside track_2a, `PYTHONPATH=src`)
 
 ```bash
 python -m splitalign.run fetch-data        # verify allowlisted dev data
@@ -60,10 +61,16 @@ python -m splitalign.run export-viewer --split val     # -> viewer/evidence.js
 
 ## Data
 
-`data/` ≈ 10 MB (limit 100 MB). Dev/train + dev/val gold files only, pinned
-commit, sha256-manifested. Held-out splits are unreachable by construction.
+`data/` ≈ 5 MB (limit 100 MB). Dev/train + dev/val gold files only, pinned
+commit, sha256-manifested. Held-out splits are fenced off by a fail-closed
+development guard (`splitalign/guard.py`): path allowlist, dev-ID manifest,
+symlink-component rejection — the manifest is a local mutable file, so the
+guard bounds this build's data access rather than proving anything about
+other environments.
 
 ## License
 
-Code Apache-2.0; report CC-BY-4.0; predictions CDLA-Permissive-2.0.
-Vendored upstream evaluation code MIT (UZH). See `NOTICE`.
+Code Apache-2.0 (all original — no upstream source redistributed); report
+CC-BY-4.0; prediction label files CDLA-Permissive-2.0 over underlying
+texts that remain CC-BY-4.0 (dataset license per its Hugging Face card).
+See `NOTICE`.

@@ -1,29 +1,24 @@
 """Official-metric evaluation, isolated from the upstream repo.
 
-Uses the vendored ``evaluation`` package (byte-identical to
-ZurichNLP/SwissGov-RSD @ 1807a42) for loading gold data and token-label
-parsing, plus ``nlpstats`` for Spearman/Kendall exactly as
-``scripts/evaluate_predictions_admin.py`` does. We re-implement only the
-glue (per-language aggregation, length-mismatch counting, -1 filtering)
-with identical semantics — proven by tests/test_eval_parity.py.
+Implements the official token-label scoring semantics — id-matched
+predictions, -1 gold filtering, length-mismatch pad/truncate, all -1
+labels_b skip, nlpstats global Spearman/Kendall and bootstrap — entirely
+with original code (see metricspec.py); no upstream source is
+redistributed. Proven equal to an independent scipy computation by
+tests/test_eval_parity.py.
 """
 from __future__ import annotations
 
 import json
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-VENDOR_DIR = Path(__file__).resolve().parents[1] / "vendor" / "swissgov_rsd"
-if str(VENDOR_DIR) not in sys.path:
-    sys.path.insert(0, str(VENDOR_DIR))
+from nlpstats.correlations import bootstrap, correlate
 
-from evaluation.utils import load_gold_data  # noqa: E402  (vendored upstream)
-from nlpstats.correlations import bootstrap, correlate  # noqa: E402
-
-from . import guard  # noqa: E402
+from . import guard
+from .metricspec import load_gold_data
 
 # The official LLM scoring drops the ids in upstream ``list_to_drop.txt``
 # (applied only to LLM-format predictions). The subset of those ids that
@@ -47,6 +42,9 @@ class LangResult:
     n_samples: int
     len_mismatch_a: int = 0
     len_mismatch_b: int = 0
+    n_gold_items: int = 0
+    coverage: float = 0.0
+    missing_ids: list = field(default_factory=list)
 
 
 def _correlate(pred_labels: list[float], gold_labels: list[float],
@@ -57,12 +55,12 @@ def _correlate(pred_labels: list[float], gold_labels: list[float],
     ga = np.expand_dims(np.array(fg), 0)
     spear = correlate(pa, ga, level="global", coefficient="spearman")
     kend = correlate(pa, ga, level="global", coefficient="kendall")
-    lo = hi = spear
     if n_resamples > 0:
         b = bootstrap(pa, ga, level="global", coefficient="spearman",
                       resampling_method="inputs", n_resamples=n_resamples)
-        lo, hi = float(b.lower), float(b.upper)
-    return float(spear), lo, hi, float(kend)
+        return float(spear), float(b.lower), float(b.upper), float(kend)
+    # bootstrap 0: no interval was computed — callers must omit the bounds
+    return float(spear), None, None, float(kend)
 
 
 def evaluate_predictions(pred_records: list[dict], gold_path: Path,
@@ -76,10 +74,12 @@ def evaluate_predictions(pred_records: list[dict], gold_path: Path,
     gold_items = [json.loads(line) for line in
                   guard.guard_data_dir(gold_path).read_text().splitlines() if line.strip()]
     guard.assert_ids_allowed([r["id"] for r in gold_items])
+    missing = [g["id"] for g in gold_items if g["id"] not in by_id]
     if drop_ids:
         keep = [g["id"] not in drop_ids for g in gold_items]
         gold_items = [g for g, k in zip(gold_items, keep) if k]
         gold_samples = [g for g, k in zip(gold_samples, keep) if k]
+    n_gold = len(gold_items)
 
     pred_labels: list[float] = []
     gold_labels: list[float] = []
@@ -114,15 +114,26 @@ def evaluate_predictions(pred_records: list[dict], gold_path: Path,
             gold_labels.extend(gb)
 
     spear, lo, hi, kend = _correlate(pred_labels, gold_labels, n_resamples)
-    return LangResult(lang=lang, spearman=spear, spearman_lo=lo,
-                      spearman_hi=hi, kendall=kend,
-                      n_tokens=len(gold_labels), n_samples=used,
-                      len_mismatch_a=mm_a, len_mismatch_b=mm_b)
+    res = LangResult(lang=lang, spearman=spear, spearman_lo=lo,
+                     spearman_hi=hi, kendall=kend,
+                     n_tokens=len(gold_labels), n_samples=used,
+                     len_mismatch_a=mm_a, len_mismatch_b=mm_b)
+    res.n_gold_items = n_gold
+    res.coverage = used / n_gold if n_gold else 0.0
+    res.missing_ids = missing
+    return res
+
+
+def _dump(r: LangResult) -> dict:
+    # omit CI bounds entirely when no bootstrap was computed (never display
+    # lo == hi == point as if it were a confidence interval)
+    return {k: v for k, v in vars(r).items() if v is not None}
 
 
 def evaluate_split(pred_dir: Path, split: str, langs=("de", "fr", "it"),
                    n_resamples: int = 1000,
-                   prefix: str | None = None) -> dict:
+                   prefix: str | None = None,
+                   require_full_coverage: bool = False) -> dict:
     """Evaluate a prediction-set directory over all languages.
 
     ``split`` is firewall-checked: only dev/train and dev/val are legal.
@@ -149,14 +160,21 @@ def evaluate_split(pred_dir: Path, split: str, langs=("de", "fr", "it"),
         results[lang] = evaluate_predictions(recs, gold, lang, n_resamples)
         results_excl[lang] = evaluate_predictions(recs, gold, lang, n_resamples,
                                                   drop_ids=DEV_DROP_IDS)
+    if require_full_coverage:
+        gaps = {k: r.missing_ids for k, r in results.items() if r.missing_ids}
+        if gaps:
+            raise SystemExit(
+                "incomplete prediction coverage: "
+                + "; ".join(f"{k} missing {v[:5]}{'...' if len(v) > 5 else ''}"
+                            for k, v in gaps.items()))
     macro = float(np.mean([r.spearman for r in results.values()])) if results else float("nan")
     macro_excl = (float(np.mean([r.spearman for r in results_excl.values()]))
                   if results_excl else float("nan"))
     return {"split": norm,
-            "per_language": {k: vars(v) for k, v in results.items()},
+            "per_language": {k: _dump(v) for k, v in results.items()},
             "macro_spearman": macro,
             # official LLM scoring also drops list_to_drop.txt ids; report the
             # same metric excluding the dev subset of those ids for parity.
-            "per_language_excl_dev_drop": {k: vars(v) for k, v in results_excl.items()},
+            "per_language_excl_dev_drop": {k: _dump(v) for k, v in results_excl.items()},
             "macro_spearman_excl_dev_drop": macro_excl,
             "dev_drop_ids": sorted(DEV_DROP_IDS)}
