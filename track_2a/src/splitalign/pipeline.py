@@ -158,6 +158,9 @@ def predict_baseline_item(item: dict, judge: Judge) -> dict:
 def make_judge(backend: str, results_dir: Path, split: str, item_id: str,
                seed: int = 0, budget=None) -> tuple[Judge, str]:
     client, backend_name = client_from_env_or_mock(backend, seed=seed)
+    if budget is not None and backend_name == "apertus":
+        # one shared budget object caps every outbound attempt of this run
+        client.budget = budget
     cache = DiskCache(Path(results_dir) / "cache")
     logger = CallLogger(Path(results_dir) / "calls.jsonl")
     return Judge(client=client, backend=backend_name, cache=cache,

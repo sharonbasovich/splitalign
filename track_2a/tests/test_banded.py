@@ -61,27 +61,101 @@ def test_zero_fill_when_pair_unreturned(tmp_path):
     assert all(isinstance(v, float) for row in sim for v in row)
 
 
-# -- noncached API budget ----------------------------------------------------
+# -- noncached API budget: outbound-attempt accounting (synthetic, no net) --
 
-def test_budget_caps_new_requests_only(tmp_path):
-    import pytest
-    from splitalign.apertus import ApiBudget, BudgetExceeded
-    j = _judge(tmp_path)
-    j.budget = ApiBudget(max_requests=1, max_tokens=10**9)
-    j.similarity_matrix(["a", "b"], ["x", "y"])  # 1 batch call = 1 request
+import io
+import urllib.error
+import json as _json
+import pytest
+from splitalign.apertus import (ApertusClient, ApiBudget, ApertusUnavailable,
+                                BudgetExceeded)
+from splitalign import apertus as _ap
+
+
+class _FakeResp:
+    def __init__(self, usage_pt=10, usage_ct=5):
+        self._body = _json.dumps({
+            "model": "fake", "choices": [{"message": {"content": "ok"}}],
+            "usage": {"prompt_tokens": usage_pt,
+                      "completion_tokens": usage_ct}}).encode()
+
+    def read(self):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+
+def _client(budget, retries=5):
+    c = ApertusClient("http://fake", "k", "m", rps=0, max_retries=retries)
+    c.budget = budget
+    return c
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    monkeypatch.setattr(_ap.time, "sleep", lambda *_: None)
+
+
+def _http_err(code):
+    return urllib.error.HTTPError("u", code, "", {}, io.BytesIO(b"err"))
+
+
+def test_retries_count_as_requests(no_sleep, monkeypatch):
+    """Every outbound attempt (incl. 429 retries) consumes the cap."""
+    budget = ApiBudget(max_requests=3, max_tokens=10**9)
+    client = _client(budget)
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_err(429)))
     with pytest.raises(BudgetExceeded):
-        j.similarity_matrix(["a", "b"], ["x", "y2"])  # new payload -> new call
-    # cached replays of an identical payload must NOT consume budget
-    j2 = _judge(tmp_path)
-    j2.budget = ApiBudget(max_requests=1, max_tokens=10**9)
-    j2.similarity_matrix(["a", "b"], ["x", "y"])   # cache hit -> 0 requests
-    assert j2.budget.requests == 0
+        client.complete([{"role": "user", "content": "hi"}])
+    assert budget.requests == 3            # exactly 3 outbound attempts made
+    assert budget.attempts_no_usage == 3   # token cost unknown — reported
+    assert budget.tokens == 0
 
 
-def test_budget_token_cap(tmp_path):
-    import pytest
-    from splitalign.apertus import ApiBudget, BudgetExceeded
-    j = _judge(tmp_path)
-    j.budget = ApiBudget(max_requests=10**9, max_tokens=1)
+def test_token_preflight_blocks_new_attempt(no_sleep, monkeypatch):
+    """Token exhaustion stops the NEXT attempt before it leaves the client."""
+    budget = ApiBudget(max_requests=10**9, max_tokens=15)
+    client = _client(budget)
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: _FakeResp(10, 5))
+    client.complete([{"role": "user", "content": "a"}])   # 15 tokens: at cap
+    assert budget.tokens == 15 and budget.requests == 1
+    with pytest.raises(BudgetExceeded, match="token cap"):
+        client.complete([{"role": "user", "content": "b"}])  # never sent
+    assert budget.requests == 1
+
+
+def test_timeouts_count_as_attempts(no_sleep, monkeypatch):
+    """Timeout/network failures are real attempts, counted then retried."""
+    budget = ApiBudget(max_requests=2, max_tokens=10**9)
+    client = _client(budget)
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(
+                            urllib.error.URLError("timeout")))
     with pytest.raises(BudgetExceeded):
-        j.similarity_matrix(["a", "b"], ["x", "y"])
+        client.complete([{"role": "user", "content": "hi"}])
+    assert budget.requests == 2
+
+
+def test_retry_exhaustion_raises_unavailable(no_sleep, monkeypatch):
+    """Retries exhausted -> ApertusUnavailable; every attempt was counted."""
+    budget = ApiBudget(max_requests=10**9, max_tokens=10**9)
+    client = _client(budget, retries=2)
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: (_ for _ in ()).throw(_http_err(500)))
+    with pytest.raises(ApertusUnavailable):
+        client.complete([{"role": "user", "content": "hi"}])
+    assert budget.requests == 3            # initial + 2 retries
+
+
+def test_cache_hits_stay_free(tmp_path):
+    """Identical-key cache hits never consume budget."""
+    j = _judge(tmp_path)
+    j.budget = ApiBudget(max_requests=0, max_tokens=0)
+    j.similarity_matrix(["a", "b"], ["x", "y"])   # mock client, free
+    assert j.budget.requests == 0

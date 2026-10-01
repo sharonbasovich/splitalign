@@ -113,6 +113,9 @@ class ApertusClient:
         self.min_interval = 1.0 / rps if rps > 0 else 0.0
         self.max_retries = max_retries
         self._last_call = 0.0
+        # optional shared ApiBudget; set post-construction by the caller so
+        # the SAME object governs every attempt across both methods
+        self.budget = None
 
     @classmethod
     def from_env(cls) -> "ApertusClient":
@@ -146,6 +149,10 @@ class ApertusClient:
         url = f"{self.base}/chat/completions"
         attempt = 0
         while True:
+            # cap check at the ACTUAL outbound boundary: no attempt — retried
+            # or fresh — leaves the client while either budget is exhausted
+            if self.budget is not None:
+                self.budget.preflight()
             self._throttle()
             t0 = time.monotonic()
             req = urllib.request.Request(
@@ -159,16 +166,22 @@ class ApertusClient:
                 choice = payload["choices"][0]
                 text = choice["message"]["content"]
                 usage = payload.get("usage") or {}
+                pt = int(usage.get("prompt_tokens", 0))
+                ct = int(usage.get("completion_tokens", 0))
+                if self.budget is not None:
+                    self.budget.charge_attempt(pt, ct)
                 return ChatResult(
                     text=text,
                     model=payload.get("model", self.model),
                     backend=self.backend,
-                    prompt_tokens=int(usage.get("prompt_tokens", 0)),
-                    completion_tokens=int(usage.get("completion_tokens", 0)),
+                    prompt_tokens=pt,
+                    completion_tokens=ct,
                     latency_ms=(time.monotonic() - t0) * 1000.0,
                 )
             except urllib.error.HTTPError as e:
                 self._last_call = time.monotonic()
+                if self.budget is not None:
+                    self.budget.charge_attempt()  # attempt happened, usage unknown
                 if e.code in (429, 500, 502, 503, 504) and attempt < self.max_retries:
                     attempt += 1
                     time.sleep(min(2 ** attempt, 30))
@@ -177,6 +190,8 @@ class ApertusClient:
                     f"Apertus endpoint error HTTP {e.code}: "
                     f"{e.read()[:300]!r}") from e
             except (urllib.error.URLError, TimeoutError, OSError) as e:
+                if self.budget is not None:
+                    self.budget.charge_attempt()  # attempt happened, usage unknown
                 if attempt < self.max_retries:
                     attempt += 1
                     time.sleep(min(2 ** attempt, 30))
@@ -242,7 +257,19 @@ class BudgetExceeded(RuntimeError):
 
 @dataclass
 class ApiBudget:
-    """Hard cap on NEW (noncached) requests/tokens across a whole run.
+    """Hard cap on NEW (noncached) API spend across a whole run.
+
+    Accounting lives at the ACTUAL OUTBOUND ATTEMPT boundary inside
+    ``ApertusClient.complete``: every HTTP attempt — including retries,
+    429/5xx and timeout failures — increments ``requests``, so failed or
+    retried calls cannot bypass the cap. ``tokens`` sums usage measured
+    on responses; attempts that failed before a response report no usage
+    and are counted in ``attempts_no_usage`` (token cost unknown —
+    reported as uncertainty, never silently treated as free).
+    ``preflight`` is checked before EVERY outbound attempt and blocks on
+    EITHER cap. A single in-flight request can overshoot the token cap
+    by at most its prompt + bounded completion budget (``max_tokens``
+    requests are always bounded) — the only possible overshoot.
 
     Cache hits never consume budget — reuse is allowed only when the
     cache key (backend|model|prompt_version|kind|split|item|payload)
@@ -250,20 +277,27 @@ class ApiBudget:
     """
     max_requests: int = 500
     max_tokens: int = 600_000
-    requests: int = 0
-    tokens: int = 0
+    requests: int = 0            # actual outbound HTTP attempts (incl. retries)
+    tokens: int = 0              # measured prompt+completion across attempts
+    attempts_no_usage: int = 0   # failed attempts with unknown token cost
+    logical_calls: int = 0       # non-cached judge calls (each may retry)
 
-    def begin_request(self) -> None:
+    def preflight(self) -> None:
         if self.requests >= self.max_requests:
             raise BudgetExceeded(
                 f"request cap reached ({self.requests}/{self.max_requests})")
-
-    def charge(self, result) -> None:
-        self.requests += 1
-        self.tokens += (result.prompt_tokens or 0) + (result.completion_tokens or 0)
-        if self.tokens > self.max_tokens:
+        if self.tokens >= self.max_tokens:
             raise BudgetExceeded(
                 f"token cap reached ({self.tokens}/{self.max_tokens})")
+
+    def charge_attempt(self, prompt_tokens: int = 0,
+                       completion_tokens: int = 0) -> None:
+        """Account one actual outbound attempt, called after it returns."""
+        self.requests += 1
+        if prompt_tokens or completion_tokens:
+            self.tokens += prompt_tokens + completion_tokens
+        else:
+            self.attempts_no_usage += 1
 
 
 class MockApertusClient:

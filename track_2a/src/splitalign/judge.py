@@ -57,7 +57,8 @@ class Judge:
                             model=hit.get("model") or getattr(self.client, "model", None))
             return hit["text"], True, None
         if self.budget is not None:
-            self.budget.begin_request()  # raises BudgetExceeded at the cap
+            self.budget.logical_calls += 1  # non-cached call; HTTP attempts
+            # are capped inside ApertusClient.complete (retries included)
         try:
             res = self.client.complete(messages, max_tokens=max_tokens,
                                        temperature=0.0, seed=self.seed)
@@ -71,8 +72,6 @@ class Judge:
         self.logger.log(split=self.split, item_id=self.item_id, kind=kind,
                         messages=messages, result=res, ok=True,
                         error=None, cached=False)
-        if self.budget is not None:
-            self.budget.charge(res)  # may raise BudgetExceeded post-call
         self.cache.put(key, {"text": res.text, "model": res.model,
                              "backend": res.backend})
         return res.text, False, res

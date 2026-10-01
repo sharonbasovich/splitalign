@@ -178,6 +178,15 @@ def _predict(args, mode: str) -> int:
         "budget_capped": capped,
         "new_api_requests": budget.requests if budget else 0,
         "new_api_tokens": budget.tokens if budget else 0,
+        "logical_calls": budget.logical_calls if budget else 0,
+        "attempts_without_usage": budget.attempts_no_usage if budget else 0,
+        "usage_uncertainty_note": (
+            f"{budget.attempts_no_usage} failed HTTP attempt(s) have unknown "
+            "token cost and are NOT included in new_api_tokens"
+            if budget and budget.attempts_no_usage else None),
+        "overshoot_note": (
+            "a single in-flight request may overshoot the token cap by at "
+            "most prompt + bounded max_tokens completion" if budget else None),
         "elapsed_s": round(elapsed, 1),
         "caution": ("PARTIAL RUN — do not treat coverage as complete"
                     if capped else None),
