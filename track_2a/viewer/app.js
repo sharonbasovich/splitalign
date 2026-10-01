@@ -27,9 +27,12 @@
   function init() {
     const banner = $("banner");
     banner.className = "banner " + (E.mock ? "mock" : "real");
+    const inf = E.inference || {};
     banner.textContent = E.mock
       ? "MOCK BACKEND — deterministic heuristics, NOT Apertus output. Plumbing demo only."
-      : `Apertus backend — model: ${E.model || "unknown"}`;
+      : `Apertus backend — model: ${E.model || "unknown (not recorded)"} · inference prompt ${inf.prompt_version || E.prompt_version || "unknown (not recorded)"}` +
+        (E.exporter && E.exporter.prompt_version && E.exporter.prompt_version !== (inf.prompt_version || E.prompt_version)
+          ? ` (exported by ${E.exporter.prompt_version} code — NOT re-prompted)` : "");
     renderRunStatus();
 
     const msel = $("modeSel");
@@ -43,13 +46,15 @@
     const lim = $("limList");
     (E.limitations || []).forEach((l) => { const li = document.createElement("li"); li.textContent = l; lim.appendChild(li); });
     $("prov").textContent = JSON.stringify(
-      { generated_utc: E.generated_utc, splitalign: E.splitalign_version,
-        prompt: E.prompt_version, backend: E.backend, model: E.model, split: E.split,
-        run: E.run || null }, null, 2);
+      { generated_utc: E.generated_utc,
+        inference: E.inference || { splitalign_version: E.splitalign_version, prompt_version: E.prompt_version, model: E.model, note: "no separate inference block (older evidence file)" },
+        exporter: E.exporter || null,
+        backend: E.backend, split: E.split, run: E.run || null }, null, 2);
 
     document.addEventListener("keydown", (e) => {
       if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
       const its = items();
+      if (!its.length) return;
       if (e.key === "ArrowRight") { state.item = Math.min(its.length - 1, state.item + 1); state.pair = 0; }
       else if (e.key === "ArrowLeft") { state.item = Math.max(0, state.item - 1); state.pair = 0; }
       else if (e.key === "ArrowDown") { state.pair++; }
@@ -92,8 +97,10 @@
       lines.push("No matched-ID comparison in this run" +
         (R.modes_intended_not_produced.length ? ` (${R.modes_intended_not_produced.join(", ")} intended but not produced)` : "") + ".");
     }
+    if (R.call_log) lines.push(`Call log: ${R.call_log}.`);
+    (R.known_defects || []).forEach((d) => lines.push(`KNOWN CONFIGURATION DEFECT — ${d}`));
     if (R.partial) lines.unshift("PARTIAL / INCOMPLETE RUN — numbers below cover only the listed documents and support no complete comparison.");
-    box.className = "runstatus" + (R.partial ? " partial" : "");
+    box.className = "runstatus" + ((R.partial || (R.known_defects || []).length) ? " partial" : "");
     box.textContent = lines.join("\n");
   }
 
@@ -106,9 +113,18 @@
     sel.value = state.item;
   }
 
+  function hasText(it) { return typeof it.text_a === "string" && typeof it.text_b === "string"; }
+
   function renderMeta() {
     const it = item();
-    if (!it) { $("meta").textContent = "No items in evidence."; return; }
+    if (!it) { $("meta").textContent = `No items in evidence for mode "${state.mode}".`; $("evalSummary").textContent = ""; return; }
+    if (it.failed || !hasText(it)) {
+      $("evalSummary").textContent = "";
+      $("meta").textContent = `${it.id} — ${it.lang || "?"} · ` +
+        (it.failed ? `FAILED: ${it.error || "backend error"} — no prediction for this item`
+                   : "no document text recorded for this item — nothing to render");
+      return;
+    }
     const ev = (E.evaluation || {})[state.mode];
     let es = "";
     if (ev && ev.per_language && ev.per_language[it.lang]) {
@@ -144,6 +160,10 @@
       return;
     }
     const segsA = it.segments_a || [], segsB = it.segments_b || [];
+    if (!it.ops.length) {
+      box.innerHTML = `<div class="pair"><div class="cell" style="grid-column:1/4"><em>No alignment operations recorded.</em></div></div>`;
+      return;
+    }
     it.ops.forEach((op, k) => {
       const div = document.createElement("div");
       div.className = "pair" + (k === state.pair ? " active" : "");
@@ -185,7 +205,19 @@
     const it = item();
     const elA = $("tokA"), elB = $("tokB");
     elA.innerHTML = ""; elB.innerHTML = "";
-    if (!it) return;
+    $("hB").textContent = it ? ({ de: "German", fr: "French", it: "Italian" }[it.lang] || it.lang || "Other") : "Other";
+    if (!it) {
+      elA.innerHTML = "<em class='errstate'>No items in this mode.</em>";
+      elB.innerHTML = "<em class='errstate'>No items in this mode.</em>";
+      return;
+    }
+    if (it.failed || !hasText(it)) {
+      const msg = it.failed ? `Item failed: ${esc(it.error || "backend error")} (no prediction, no tokens to show)`
+                            : "No document text recorded for this item.";
+      elA.innerHTML = `<em class="errstate">${msg}</em>`;
+      elB.innerHTML = `<em class="errstate">${msg}</em>`;
+      return;
+    }
     const { sA, sB } = pairTokenSets(it);
     const toksA = it.text_a.split(/\s+/), toksB = it.text_b.split(/\s+/);
     const la = it.labels_a || [], lb = it.labels_b || [];
@@ -211,7 +243,6 @@
     }
     emit(elA, toksA, la, ga, sA, "omit");
     emit(elB, toksB, lb, gb, sB, "add");
-    $("hB").textContent = { de: "German", fr: "French", it: "Italian" }[it.lang] || it.lang;
   }
 
   function render() {

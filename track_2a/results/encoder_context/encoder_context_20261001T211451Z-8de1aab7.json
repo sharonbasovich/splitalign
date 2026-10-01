@@ -1,5 +1,5 @@
 {
- "generated_utc": "2026-10-01T21:56:16Z",
+ "generated_utc": "2026-10-01T22:22:00Z",
  "run_id": "20261001T211451Z-8de1aab7",
  "split": "dev/val",
  "mode": "splitalign",
@@ -44,7 +44,7 @@
  "n_docs": 30,
  "upstream_commit": "1807a42100e742ed03d337c54c4b9ea86995f565",
  "upstream_dir": "data/evaluation/encoder_predictions/dev",
- "comparator_policy": "preregistered reference EuroBERT-210m; all listed mmBERT DiffAlign variants as context; no comparator chosen after seeing results",
+ "comparator_policy": "preregistered reference EuroBERT-210m; four SELECTED mmBERT-base DiffAlign variants as comparison context (not exhaustive: upstream publishes more); set fixed before any score was seen and reported unchanged",
  "metric": "official token-level Spearman convention via splitalign.evaluate._correlate on identical IDs/gold; strict macro = mean over de/fr/it, null if any undefined",
  "paired_bootstrap": {
   "method": "document-level paired resampling within language, strict-macro difference (ours - comparator), B=2000, seed=0"
@@ -54,24 +54,24 @@
    "per_language": {
     "de": {
      "spearman": 0.2543,
-     "spearman_lo": 0.2272,
-     "spearman_hi": 0.2812,
+     "spearman_lo": 0.2264,
+     "spearman_hi": 0.2816,
      "kendall": 0.2305,
      "n_docs": 10,
      "n_tokens": 5757
     },
     "fr": {
      "spearman": 0.2666,
-     "spearman_lo": 0.2435,
-     "spearman_hi": 0.2885,
+     "spearman_lo": 0.2422,
+     "spearman_hi": 0.2895,
      "kendall": 0.2388,
      "n_docs": 10,
      "n_tokens": 6504
     },
     "it": {
      "spearman": 0.224,
-     "spearman_lo": 0.199,
-     "spearman_hi": 0.2477,
+     "spearman_lo": 0.2,
+     "spearman_hi": 0.2469,
      "kendall": 0.1987,
      "n_docs": 10,
      "n_tokens": 6219
@@ -83,8 +83,8 @@
    "per_language": {
     "de": {
      "spearman": 0.0548,
-     "spearman_lo": 0.0298,
-     "spearman_hi": 0.0798,
+     "spearman_lo": 0.0287,
+     "spearman_hi": 0.0804,
      "kendall": 0.0438,
      "n_docs": 10,
      "n_tokens": 5757
@@ -92,15 +92,15 @@
     "fr": {
      "spearman": 0.1958,
      "spearman_lo": 0.1726,
-     "spearman_hi": 0.2179,
+     "spearman_hi": 0.219,
      "kendall": 0.1572,
      "n_docs": 10,
      "n_tokens": 6504
     },
     "it": {
      "spearman": 0.1981,
-     "spearman_lo": 0.1738,
-     "spearman_hi": 0.2203,
+     "spearman_lo": 0.1766,
+     "spearman_hi": 0.2201,
      "kendall": 0.1573,
      "n_docs": 10,
      "n_tokens": 6219
@@ -112,24 +112,24 @@
    "per_language": {
     "de": {
      "spearman": 0.18,
-     "spearman_lo": 0.1541,
-     "spearman_hi": 0.2059,
+     "spearman_lo": 0.1545,
+     "spearman_hi": 0.2061,
      "kendall": 0.1442,
      "n_docs": 10,
      "n_tokens": 5757
     },
     "fr": {
      "spearman": 0.2295,
-     "spearman_lo": 0.2064,
-     "spearman_hi": 0.2521,
+     "spearman_lo": 0.2068,
+     "spearman_hi": 0.2519,
      "kendall": 0.1848,
      "n_docs": 10,
      "n_tokens": 6504
     },
     "it": {
      "spearman": 0.2663,
-     "spearman_lo": 0.2429,
-     "spearman_hi": 0.2885,
+     "spearman_lo": 0.2447,
+     "spearman_hi": 0.2891,
      "kendall": 0.2118,
      "n_docs": 10,
      "n_tokens": 6219
@@ -141,23 +141,23 @@
    "per_language": {
     "de": {
      "spearman": 0.1703,
-     "spearman_lo": 0.146,
-     "spearman_hi": 0.1968,
+     "spearman_lo": 0.1451,
+     "spearman_hi": 0.1955,
      "kendall": 0.1363,
      "n_docs": 10,
      "n_tokens": 5757
     },
     "fr": {
      "spearman": 0.2277,
-     "spearman_lo": 0.2061,
-     "spearman_hi": 0.2488,
+     "spearman_lo": 0.2053,
+     "spearman_hi": 0.2497,
      "kendall": 0.1832,
      "n_docs": 10,
      "n_tokens": 6504
     },
     "it": {
      "spearman": 0.2706,
-     "spearman_lo": 0.2483,
+     "spearman_lo": 0.2496,
      "spearman_hi": 0.292,
      "kendall": 0.2152,
      "n_docs": 10,
@@ -170,24 +170,24 @@
    "per_language": {
     "de": {
      "spearman": 0.1986,
-     "spearman_lo": 0.1721,
-     "spearman_hi": 0.2238,
+     "spearman_lo": 0.1734,
+     "spearman_hi": 0.2228,
      "kendall": 0.1586,
      "n_docs": 10,
      "n_tokens": 5757
     },
     "fr": {
      "spearman": 0.2433,
-     "spearman_lo": 0.2215,
-     "spearman_hi": 0.2645,
+     "spearman_lo": 0.2214,
+     "spearman_hi": 0.2644,
      "kendall": 0.1958,
      "n_docs": 10,
      "n_tokens": 6504
     },
     "it": {
      "spearman": 0.316,
-     "spearman_lo": 0.2938,
-     "spearman_hi": 0.3374,
+     "spearman_lo": 0.2949,
+     "spearman_hi": 0.3375,
      "kendall": 0.2503,
      "n_docs": 10,
      "n_tokens": 6219
@@ -199,8 +199,8 @@
    "per_language": {
     "de": {
      "spearman": 0.2063,
-     "spearman_lo": 0.1783,
-     "spearman_hi": 0.2327,
+     "spearman_lo": 0.1806,
+     "spearman_hi": 0.2319,
      "kendall": 0.1644,
      "n_docs": 10,
      "n_tokens": 5757
@@ -208,15 +208,15 @@
     "fr": {
      "spearman": 0.2429,
      "spearman_lo": 0.2205,
-     "spearman_hi": 0.2654,
+     "spearman_hi": 0.2652,
      "kendall": 0.1956,
      "n_docs": 10,
      "n_tokens": 6504
     },
     "it": {
      "spearman": 0.2986,
-     "spearman_lo": 0.2763,
-     "spearman_hi": 0.3201,
+     "spearman_lo": 0.2775,
+     "spearman_hi": 0.3206,
      "kendall": 0.2369,
      "n_docs": 10,
      "n_tokens": 6219

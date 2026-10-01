@@ -5,9 +5,15 @@ Hack Apertus Online 2026 · Track 2A (UZH SwissGov-RSD) · Team Waterloo Agent L
 Repository: https://github.com/sharonbasovich/splitalign · Code license: Apache-2.0
 Report license: CC-BY-4.0 · Prediction labels: CDLA-Permissive-2.0 over CC-BY-4.0 source texts
 
-**Status: exploratory, baseline incomplete.** Apertus SplitAlign results below are
-measured on 30 dev/val documents (10 per language). The re-implemented whole-document
-baseline was declared in the run manifest but produced no output in that run, so no
+**Status: exploratory, baseline incomplete, historical run affected by a
+configuration defect.** The Apertus SplitAlign numbers below are real outputs of run
+`20261001T211451Z-8de1aab7` on 30 dev/val documents (10 per language), but that run
+used prompt version v1, in which `predict_item` silently defaulted the judge prompt's
+target language to German — every fr and it pair was judged with a prompt naming
+German (§5.0). The figures are therefore NOT evidence for the intended multilingual
+configuration and are kept unchanged, not relabelled or regenerated; no corrected
+rerun has been performed (it requires a reviewed bounded plan). The re-implemented
+whole-document baseline was declared in the run manifest but produced no output, so no
 matched same-ID Apertus baseline exists. An offline same-ID context against published
 encoder predictions is reported with paired uncertainty; it supports no win claim.
 
@@ -33,9 +39,17 @@ space exactly, including asymmetric additions and omissions.
   dev corpus; far-off-diagonal pairs score 0 without an API call.
 - `judge.py` — structured-JSON Apertus judgments on aligned pairs: graded
   difference plus verbatim differing spans; robust parse with repair/salvage on
-  malformed output; deterministic seed; all calls cached on
-  backend|model|prompt_version|kind|split|item|payload keys and logged
-  (redacted: hashes, token counts, latency — no prompt text, no secrets).
+  malformed output; deterministic seed; the target language is a required
+  argument, named in every judge prompt and recorded per judgment (`lang_b`).
+  Calls are cached on backend|model|prompt_version|kind|split|item|payload keys
+  (the payload includes the language pair; the judge kind is keyed under
+  `splitalign-prompts-v2-lang`, so no v1 judgment can be served to the
+  corrected code) and logged redacted (hashes, token counts, latency — no
+  prompt text, no secrets). Logging is run-scoped since this repair:
+  `results/runs/<id>/calls.jsonl`, every record tagged `run_id` (cache hits and
+  errors included). The historical `results/calls.jsonl` is an UNSCOPED global
+  log from earlier code with no `run_id`; it is preserved as-is and cannot be
+  attributed per run.
 - `score.py` — maps per-op judgments onto token arrays: uniform sentence score
   plus span boosts on reported differing spans; explicit omission/addition labels.
 - `guard.py` — held-out firewall: only `dev/train` and `dev/val` paths/IDs may be
@@ -70,6 +84,10 @@ space exactly, including asymmetric additions and omissions.
   accounting sits at the outbound-attempt boundary so retries/failures count;
   a single in-flight bounded request is the only possible overshoot. Identical
   cache hits are free by construction.
+- `calibrate` (score-config grid search) does NOT run under the shared budget,
+  so it fails closed for `--backend apertus` before any client or network work;
+  bounded real calibration is unsupported. The committed `calibration.json`
+  came from the mock backend only.
 
 ## 4. Data & licensing
 
@@ -84,9 +102,23 @@ space exactly, including asymmetric additions and omissions.
 - The 'baseline' method is our **re-implemented** whole-document
   token-annotation prompt (same response contract, not the upstream template).
 
-## 5. Results (dev/val, 10 docs/language)
+## 5. Results (dev/val, 10 docs/language) — historical, defect-affected
 
-Run `20261001T211451Z-8de1aab7` — backend `apertus`, model `swiss-ai/Apertus-v1.5-8B`:
+### 5.0 Configuration defect in the reported run
+
+Independent review of the repair PR found that `run.py` called `predict_item`
+without a language while `pipeline.py` defaulted to `lang="de"`. Consequently in
+run `20261001T211451Z-8de1aab7` (prompt version `splitalign-prompts-v1`) the 20
+fr/it documents were judged with a prompt stating the target language was German
+(the texts themselves were the correct fr/it texts; the similarity prompt is
+language-agnostic). The de figures used the intended configuration; the fr/it
+figures and the macro did not. Repair: language is now a required argument at
+every entry point, named in each prompt and recorded per judgment; the judge
+cache key is versioned `v2-lang`. The historical numbers below are reported as
+produced and are explicitly not a claim for the intended multilingual method.
+
+Run `20261001T211451Z-8de1aab7` — backend `apertus`, model `swiss-ai/Apertus-v1.5-8B`,
+prompt `splitalign-prompts-v1` (defect-affected, see §5.0):
 
 | Method | de | fr | it | Strict macro |
 |---|---|---|---|---|
@@ -105,7 +137,7 @@ requests / 600,360 tokens before the token cap; earlier 3-doc diagnostics
 
 **Baseline status: incomplete.** `manifest.json` of the run declares `baseline`
 intended IDs, but no baseline predictions or summary were produced in that scope
-(`viewer/evidence.js` marks it PARTIAL for this reason). No matched
+(`viewer/evidence.js` marks it PARTIAL and lists the §5.0 defect). No matched
 whole-document Apertus baseline number exists and none is estimated.
 
 ### 5.1 Offline same-ID context vs published encoder predictions (no API calls)
@@ -115,13 +147,18 @@ predictions (upstream commit `1807a42`, `data/evaluation/encoder_predictions/dev
 every ID validated against our dev manifest, files not redistributed — URLs and
 sha256 in [`results/encoder_context/`](https://github.com/sharonbasovich/splitalign/tree/main/track_2a/results/encoder_context))
 on exactly the same 30 IDs with the same metric code. Comparator policy was fixed
-before looking: EuroBERT-210m is the preregistered reference; all four mmBERT
-parallel DiffAlign variants are context. Paired = document-level paired bootstrap
-of the strict-macro difference (SplitAlign − system), B = 2000, seed 0.
+before looking: EuroBERT-210m is the preregistered reference; four named
+mmBERT-base DiffAlign variants (`parallel_en-de`, `parallel_en-sw`,
+`parallel_en-de-fr-it`, `parallel_all_1epoch`) are **selected comparison
+context** — upstream publishes more mmBERT variants, so this set is neither
+exhaustive nor proof against selection effects; it was chosen before any score was
+seen and is reported unchanged. Paired = document-level paired bootstrap of the
+strict-macro difference (SplitAlign − system), B = 2000, seed 0. SplitAlign's row
+is the defect-affected v1 run (§5.0).
 
 | System (same 30 IDs) | de | fr | it | Strict macro | Paired diff, 95% CI |
 |---|---|---|---|---|---|
-| SplitAlign (this run) | 0.254 | 0.267 | 0.224 | 0.248 | — |
+| SplitAlign (v1 run, §5.0) | 0.254 | 0.267 | 0.224 | 0.248 | — |
 | EuroBERT-210m DiffAlign (reference) | 0.055 | 0.196 | 0.198 | 0.150 | +0.099 [−0.008, +0.184] |
 | mmBERT parallel_en-de | 0.180 | 0.230 | 0.266 | 0.225 | +0.023 [−0.073, +0.102] |
 | mmBERT parallel_en-sw | 0.170 | 0.228 | 0.271 | 0.223 | +0.025 [−0.070, +0.104] |
@@ -132,12 +169,19 @@ Reading: SplitAlign is numerically above the preregistered EuroBERT reference on
 these 30 documents, but the paired 95% interval includes zero; against the
 stronger mmBERT variants the difference is indistinguishable from zero. This is
 **no evidence of improvement** over published encoders, and same-ID subset
-figures are not comparable to whole-dev (168 docs/lang) numbers. Prior-work
-figures from the dataset paper are not reproduced here; see the upstream
-repository for the authors' reported results.
+figures are not comparable to whole-dev (168 docs/lang) numbers, and the
+SplitAlign row carries the §5.0 defect. Prior-work figures from the dataset paper
+are not reproduced here; see the upstream repository for the authors' reported
+results.
 
 ## 6. Limitations
 
+- **The only real Apertus run reported used the wrong judge-prompt language for
+  fr/it (§5.0).** No corrected multilingual run exists; one needs a reviewed
+  bounded plan (budget, IDs, cache policy) before any new inference.
+- Historical call log `results/calls.jsonl` is unscoped (no `run_id`); per-run
+  call provenance exists only for runs made after this repair.
+- `calibrate` is mock-only (fails closed on a real backend; no shared budget).
 - Sentence-level judgments map to uniform token scores except on reported
   differing spans; fine-grained in-sentence variation is approximated.
 - Alignment is monotone; cross-lingual reordering is not modeled.
@@ -165,10 +209,18 @@ repository for the authors' reported results.
 - Seeds: `--seed 0` everywhere; `temperature=0`; deterministic mock; payload-
   keyed cache makes reruns bit-identical for identical prompts.
 - Evidence viewer: `track_2a/viewer/` (static, bilingual, per-token heat maps
-  with real-vs-mock labels). `export-viewer` requires an explicit `--run` and
-  embeds run id, intended vs produced modes, completed/intended counts,
-  coverage, cap/partial status and matched-ID info; the newest run is never
-  promoted implicitly.
+  with real-vs-mock labels; failed or text-less items render an explicit error
+  state). `export-viewer` requires an explicit `--run` and embeds run id,
+  intended vs produced modes, completed/intended counts, coverage, cap/partial
+  status, matched-ID info and known configuration defects; the newest run is
+  never promoted implicitly. Inference provenance (`inference`: prompt version,
+  model, package — from the run manifest and per-item records, null where
+  unrecorded) is kept separate from `exporter` (the code that wrote the file),
+  so re-exporting run `8de1aab7` labels it prompt `v1`, never the current
+  version.
+- Demo recordings in `track_2a/demo/` were made on the pre-repair viewer
+  showing the §5.0-affected run; they are historical and are not a corrected
+  demo (see `demo/README.md`).
 - Offline encoder context: `PYTHONPATH=src python scripts/encoder_context_dev.py
   --run results/runs/<id>` (dev files only, no model access).
 

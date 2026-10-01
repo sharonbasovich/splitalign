@@ -8,7 +8,7 @@ import json
 import re
 from dataclasses import dataclass, field
 
-from . import PROMPT_VERSION
+from . import PROMPT_VERSION, PROMPT_VERSION_BY_KIND
 from .apertus import ChatResult, CallLogger, client_from_env_or_mock
 from .cache import DiskCache, payload_hash
 from . import prompts
@@ -23,6 +23,7 @@ class Judgment:
     repairs: int = 0
     cached: bool = False
     raw: str = ""
+    lang_b: str = ""           # target language the judge prompt was written for
 
 
 @dataclass
@@ -44,7 +45,7 @@ class Judge:
         key = self.cache.key(
             backend=self.backend,
             model=getattr(self.client, "model", "?"),
-            prompt_version=PROMPT_VERSION,
+            prompt_version=PROMPT_VERSION_BY_KIND.get(kind, PROMPT_VERSION),
             kind=kind, split=self.split, item_id=self.item_id,
             payload=payload_for_key,
         )
@@ -115,8 +116,9 @@ class Judge:
         return sim
 
     # -- pair judgment ------------------------------------------------------
-    def judge_pair(self, a_text: str, b_text: str,
-                   lang_a: str = "en", lang_b: str = "de") -> Judgment:
+    def judge_pair(self, a_text: str, b_text: str, *,
+                   lang_a: str, lang_b: str) -> Judgment:
+        """lang_b is required: the prompt names the target language."""
         req = prompts.judge_request(a_text, b_text, lang_a, lang_b)
         lang_names = {"de": "German", "fr": "French", "it": "Italian", "en": "English"}
         msgs = prompts.messages(
@@ -134,10 +136,12 @@ class Judge:
                 j.cached = cached
                 j.repairs = repairs
                 j.raw = text[:2000]
+                j.lang_b = lang_b
                 return j
             if repairs >= self.max_repairs:
                 return Judgment(difference=-1, spans_a=[], spans_b=[], ok=False,
-                                repairs=repairs, cached=cached, raw=text[:2000])
+                                repairs=repairs, cached=cached, raw=text[:2000],
+                                lang_b=lang_b)
             repairs += 1
             msgs = msgs + [{"role": "assistant", "content": text},
                            {"role": "user", "content":

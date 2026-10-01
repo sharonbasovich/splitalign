@@ -10,8 +10,11 @@ strict-macro difference. Upstream prediction files are never written into
 the repository — only aggregates, URLs and sha256 hashes are recorded.
 
 Comparator policy (fixed before looking at numbers): the preregistered
-reference is EuroBERT-210m; the mmBERT DiffAlign variants are reported as
-context, all of them, never a cherry-picked subset.
+reference is EuroBERT-210m; four named mmBERT-base DiffAlign variants
+(parallel_en-de, parallel_en-sw, parallel_en-de-fr-it, parallel_all_1epoch)
+are SELECTED comparison context. Upstream publishes more mmBERT variants;
+this set was chosen before any score was seen and is not exhaustive. It is
+reported unchanged whatever the outcome.
 
 Usage (PYTHONPATH=src):
   python scripts/encoder_context_dev.py --run results/runs/<id> \
@@ -167,6 +170,7 @@ def main() -> int:
 
     rows = {}
     for name, ds in systems.items():
+        np.random.seed(a.seed)  # nlpstats token-bootstrap uses the global RNG
         per = {l: _pooled(ds[l], ids[l], a.resamples) for l in LANGS}
         rows[name] = {"per_language": per, "strict_macro": _strict_macro(per)}
 
@@ -197,9 +201,11 @@ def main() -> int:
         "run_id": run_dir.name, "split": split, "mode": a.mode,
         "ids": ids, "n_docs": sum(len(v) for v in ids.values()),
         "upstream_commit": PINNED_COMMIT, "upstream_dir": UPSTREAM_DIR,
-        "comparator_policy": ("preregistered reference EuroBERT-210m; all "
-                              "listed mmBERT DiffAlign variants as context; "
-                              "no comparator chosen after seeing results"),
+        "comparator_policy": ("preregistered reference EuroBERT-210m; four "
+                              "SELECTED mmBERT-base DiffAlign variants as "
+                              "comparison context (not exhaustive: upstream "
+                              "publishes more); set fixed before any score "
+                              "was seen and reported unchanged"),
         "metric": ("official token-level Spearman convention via "
                    "splitalign.evaluate._correlate on identical IDs/gold; "
                    "strict macro = mean over de/fr/it, null if any undefined"),

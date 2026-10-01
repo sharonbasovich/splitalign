@@ -25,9 +25,13 @@ from .segment import segment_text, segment_text_str
 
 def predict_item(item: dict, judge: Judge,
                  align_cfg: AlignConfig | None = None,
-                 score_cfg: ScoreConfig | None = None,
-                 lang: str = "de") -> dict:
-    """One gold item -> prediction record + alignment detail."""
+                 score_cfg: ScoreConfig | None = None, *,
+                 lang: str) -> dict:
+    """One gold item -> prediction record + alignment detail.
+
+    ``lang`` (de/fr/it) is required and names the target language in every
+    judge prompt and in each judgment's provenance.
+    """
     text_a, text_b = item["text_a"], item["text_b"]
     tokens_a, segs_a = segment_text(text_a)
     tokens_b, segs_b = segment_text(text_b)
@@ -46,6 +50,7 @@ def predict_item(item: dict, judge: Judge,
         pa = " ".join(a_texts[op.a_start:op.a_end])
         pb = " ".join(b_texts[op.b_start:op.b_end])
         judgments.append(judge.judge_pair(pa, pb, lang_a="en", lang_b=lang))
+    assert all(j is None or j.lang_b == lang for j in judgments)
 
     labels_a, labels_b, stats = score_item(
         tokens_a, tokens_b, segs_a, segs_b, text_a, text_b,
@@ -61,7 +66,8 @@ def predict_item(item: dict, judge: Judge,
         "judgments": [None if j is None else {
             "difference": j.difference, "spans_a": j.spans_a,
             "spans_b": j.spans_b, "ok": j.ok, "repairs": j.repairs,
-            "cached": j.cached} for j in judgments],
+            "cached": j.cached, "lang_b": j.lang_b} for j in judgments],
+        "judge_lang": lang,
         "coverage": cov,
         "stats": {"parse_failures": stats.parse_failures,
                   "repairs": stats.repairs,
@@ -156,13 +162,18 @@ def predict_baseline_item(item: dict, judge: Judge) -> dict:
 
 
 def make_judge(backend: str, results_dir: Path, split: str, item_id: str,
-               seed: int = 0, budget=None) -> tuple[Judge, str]:
+               seed: int = 0, budget=None, *, run_id: str | None = None,
+               log_path: Path | None = None) -> tuple[Judge, str]:
+    """``run_id`` tags every log record (cached and error records included);
+    ``log_path`` defaults to the shared ``results_dir/calls.jsonl`` and should
+    be the run scope's own ``calls.jsonl`` for pipeline runs."""
     client, backend_name = client_from_env_or_mock(backend, seed=seed)
     if budget is not None and backend_name == "apertus":
         # one shared budget object caps every outbound attempt of this run
         client.budget = budget
     cache = DiskCache(Path(results_dir) / "cache")
-    logger = CallLogger(Path(results_dir) / "calls.jsonl")
+    logger = CallLogger(Path(log_path) if log_path else
+                        Path(results_dir) / "calls.jsonl", run_id=run_id)
     return Judge(client=client, backend=backend_name, cache=cache,
                  logger=logger, split=split, item_id=item_id, seed=seed,
                  budget=budget), backend_name

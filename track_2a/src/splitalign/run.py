@@ -34,7 +34,7 @@ from .fetch_data import ALLOWLIST, fetch, load_gold_items, write_manifest
 from .pipeline import (make_judge, predict_baseline_item, predict_item,
                        provenance)
 from .score import ScoreConfig
-from .viewer_export import export_evidence
+from .viewer_export import export_evidence, inference_provenance
 
 TRACK_DIR = guard.TRACK_DIR
 # SPLITALIGN_OUT redirects every produced artifact (results + viewer) — the
@@ -210,12 +210,15 @@ def _predict(args, mode: str) -> int:
             started.add(lang)
             for item in wanted:
                 judge, backend = make_judge(args.backend, RESULTS_DIR, split,
-                                            item["id"], seed, budget=budget)
+                                            item["id"], seed, budget=budget,
+                                            run_id=run_dir.name,
+                                            log_path=run_dir / "calls.jsonl")
                 try:
                     if mode == "baseline":
                         out = predict_baseline_item(item, judge)
                     else:
-                        out = predict_item(item, judge, score_cfg=score_cfg)
+                        out = predict_item(item, judge, score_cfg=score_cfg,
+                                           lang=lang)
                 except ApertusUnavailable as e:
                     # truthful per-item failure: no prediction, run continues
                     det = {"id": item["id"], "lang": lang, "failed": True,
@@ -321,8 +324,18 @@ def _load_score_cfg(args) -> ScoreConfig:
 def cmd_calibrate(args) -> int:
     """Grid-search score/align params on dev/train, evaluate on dev/val."""
     split_train, split_val = "dev/train", "dev/val"
+    if args.backend != "mock":
+        # Fail closed BEFORE any client/network work: calibrate creates its
+        # judges without the shared ApiBudget, so --max-requests/--max-tokens
+        # would not bound a real backend. Bounded real calibration is
+        # unsupported until a reviewed shared-budget implementation exists.
+        raise SystemExit(
+            "calibrate supports --backend mock only: the grid search does not "
+            "run under the shared request/token budget, so a real backend "
+            "cannot be bounded. No request was attempted.")
     langs = _langs(args.lang)
     limit = args.limit
+    cal_run_id = f"calibrate-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
 
     # run predictions ONCE per config on train, pick best, then val.
     grids = {
@@ -339,8 +352,10 @@ def cmd_calibrate(args) -> int:
             recs = []
             for item in _items(split_train, lang, limit):
                 judge, backend = make_judge(args.backend, RESULTS_DIR,
-                                            split_train, item["id"], args.seed)
-                recs.append(predict_item(item, judge, score_cfg=cfg)["record"])
+                                            split_train, item["id"], args.seed,
+                                            run_id=cal_run_id)
+                recs.append(predict_item(item, judge, score_cfg=cfg,
+                                         lang=lang)["record"])
             gold = guard.gold_path(split_train, lang)
             r = evaluate_predictions(recs, gold, lang, n_resamples=0)
             spear_sum += r.spearman
@@ -429,6 +444,7 @@ def _run_info(run_dir: Path, split: str, backend: str, tag: str,
                    "macro_matched": mj.get("macro_matched")}
     produced = sorted(produced_modes)
     not_produced = sorted(set(man["modes"]) - set(produced))
+    scoped_log = (run_dir / "calls.jsonl").exists()
     partial = any((e.get("budget_capped") or not e["produced"]
                    or e.get("n_completed", 0) < e["n_intended"])
                   for e in modes.values())
@@ -437,6 +453,11 @@ def _run_info(run_dir: Path, split: str, backend: str, tag: str,
         "started_utc": man.get("started_utc"),
         "source": man.get("source"),
         "prompt_version": man.get("prompt_version"),
+        "known_defects": _known_defects(man.get("prompt_version")),
+        "call_log": ("run-scoped calls.jsonl (every record tagged run_id)"
+                     if scoped_log else
+                     "no run-scoped log: calls were appended to the historical "
+                     "global results/calls.jsonl without a run_id"),
         "n_split": n_split,
         "modes": modes,
         "modes_produced": produced,
@@ -449,6 +470,21 @@ def _run_info(run_dir: Path, split: str, backend: str, tag: str,
             if not_produced or not matched else
             "matched-ID comparison available for the produced modes"),
     }
+
+
+def _known_defects(prompt_version: str | None) -> list[str]:
+    """Configuration defects of recorded prompt versions, stated as facts
+    about the historical run — never corrected retroactively."""
+    if prompt_version in (None, "splitalign-prompts-v1"):
+        return [
+            "judge prompt language: under prompt v1 (and earlier unrecorded "
+            "versions) predict_item used its default lang='de', so every "
+            "fr/it pair was judged with a prompt naming German as the target "
+            "language. Outputs are real but belong to this defective "
+            "configuration, not to the intended multilingual one. Fixed in "
+            "splitalign-prompts-v2-lang (language required, recorded per "
+            "judgment)."]
+    return []
 
 
 def cmd_export_viewer(args) -> int:
@@ -469,14 +505,14 @@ def cmd_export_viewer(args) -> int:
         if ep.exists():
             evals[mode] = _load_strict_json(ep)
     run_info = _run_info(run_dir, split, args.backend, tag, items_by_mode)
-    # actual executed model, from recorded provenance (never assumed)
-    model = next((it["provenance"].get("model")
-                  for d in items_by_mode.values() for it in d
-                  if it.get("provenance", {}).get("model")), None)
+    # prompt/model/package that actually produced the items, from the run
+    # manifest + per-item provenance (never from this exporting process)
+    inference = inference_provenance(
+        items_by_mode, _load_strict_json(run_dir / "manifest.json"))
+    lims = _limitations(args.backend) + run_info["known_defects"]
     out = export_evidence(items_by_mode, EVIDENCE_PATH, backend=args.backend,
-                          model=model, split=split, evaluation=evals,
-                          limitations=_limitations(args.backend),
-                          run=run_info)
+                          inference=inference, split=split, evaluation=evals,
+                          limitations=lims, run=run_info)
     # keep the viewer self-contained wherever OUT_DIR points
     for name in ("index.html", "style.css", "app.js"):
         src = TRACK_DIR / "viewer" / name
@@ -592,8 +628,9 @@ def cmd_selftest(args) -> int:
     import tempfile
     items = load_gold_items("dev/val", "de")[:1]
     with tempfile.TemporaryDirectory() as td:
-        judge, backend = make_judge("mock", Path(td), "dev/val", items[0]["id"], 0)
-        out = predict_item(items[0], judge)
+        judge, backend = make_judge("mock", Path(td), "dev/val", items[0]["id"], 0,
+                                    run_id="selftest")
+        out = predict_item(items[0], judge, lang="de")
         gold = guard.gold_path("dev/val", "de")
         r = evaluate_predictions([out["record"]], gold, "de", n_resamples=0)
         print(f"selftest ok: 1 item, spearman {r.spearman:.3f}, "

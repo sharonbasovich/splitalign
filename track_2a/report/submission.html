@@ -57,11 +57,16 @@ asymmetric additions/omissions get explicit labels.</li>
 <p>CSCS hosted inference <code>api.inference.cscs.ch/v1</code>,
 model <code>swiss-ai/Apertus-v1.5-8B</code> (non-thinking), temperature 0, fixed seed.
 Apertus performs both the similarity scoring and the graded judgments — no fine-tuning
-or hidden-state access is assumed. Every call is cached on
-backend|model|prompt-version|kind|split|item|payload keys and logged redacted
-(hashes, token counts, latency only). A shared budget caps NEW requests <i>and</i>
-tokens across both methods at the <b>outbound-attempt boundary</b>, so retries and
-failures cannot bypass the cap; identical cache hits are free.</p>
+or hidden-state access is assumed. The target language (de/fr/it) is a required
+argument named in every judge prompt and recorded per judgment. Every call is cached on
+backend|model|prompt-version|kind|split|item|payload keys (payload includes the language
+pair; judge entries keyed <code>v2-lang</code>) and logged redacted (hashes, token counts,
+latency only) into the run's own <code>calls.jsonl</code> tagged <code>run_id</code> — the
+historical global <code>results/calls.jsonl</code> is unscoped and kept as-is. A shared
+budget caps NEW requests <i>and</i> tokens across both methods at the <b>outbound-attempt
+boundary</b>, so retries and failures cannot bypass the cap; identical cache hits are free.
+<code>calibrate</code> runs outside that budget and therefore fails closed on a real backend
+(mock only).</p>
 
 <h2>3&nbsp; Data, licensing, and the held-out firewall</h2>
 <p>Only <code>dev/train</code> and <code>dev/val</code> of ZurichNLP/swissgov-rsd
@@ -73,8 +78,18 @@ punctuation filter and <code>list_to_drop.txt</code> exclusion (reported both wa
 All scoring code is <b>original Apache-2.0</b> written from the metric specification —
 no vendored upstream code (upstream ships no repo-level license).</p>
 
-<h2>4&nbsp; Evaluation — dev/val, 10 documents/language (exploratory; baseline incomplete)</h2>
-<p>Run <code>20261001T211451Z-8de1aab7</code>: 30/30 planned SplitAlign items, 97 new
+<h2>4&nbsp; Evaluation — dev/val, 10 documents/language (historical; defect-affected; baseline incomplete)</h2>
+<div class="warn"><b>Configuration defect in the reported run.</b> Independent review found
+that <code>run.py</code> called <code>predict_item</code> without a language while the
+pipeline defaulted to <code>lang="de"</code>: in run <code>8de1aab7</code> (prompt v1) all 20
+fr/it documents were judged with a prompt naming <i>German</i> as the target language
+(texts were the correct fr/it texts; the similarity prompt is language-agnostic). The de
+figures used the intended configuration; fr/it and the macro did not. The numbers are real
+outputs of that defective configuration, kept unchanged — <b>not a valid claim for the
+intended multilingual method</b>. Fixed (language required at every entry point, recorded
+per judgment, judge cache re-keyed <code>v2-lang</code>); no corrected rerun exists yet — it
+needs a reviewed bounded plan before any new model call.</div>
+<p>Run <code>20261001T211451Z-8de1aab7</code> (prompt v1): 30/30 planned SplitAlign items, 97 new
 requests / 72.6k new tokens / 159 s on top of cache hits from an earlier partial run
 (24/30 docs, 499 requests / 600k tokens, token cap hit). Strict macro Spearman = mean over
 de/fr/it, null if any language is undefined; nonfinite values serialize as JSON null with
@@ -87,22 +102,26 @@ the dataset authors' published DEV encoder predictions (upstream commit <code>18
 <code>data/evaluation/encoder_predictions/dev/</code>; every ID validated against our dev
 manifest; files not redistributed — URLs/sha256 in <code>results/encoder_context/</code>)
 scored on exactly the same 30 IDs with the same metric code. Comparator fixed in advance:
-EuroBERT-210m reference, all four mmBERT parallel DiffAlign variants as context. Paired =
-document-level paired bootstrap of the strict-macro difference (SplitAlign − system), B=2000.</p>
+EuroBERT-210m reference; four named mmBERT-base variants (<code>parallel_en-de</code>,
+<code>en-sw</code>, <code>en-de-fr-it</code>, <code>all_1epoch</code>) as <b>selected</b>
+context — upstream publishes more variants; this set is not exhaustive and was fixed before
+any score was seen. Paired = document-level paired bootstrap of the strict-macro difference
+(SplitAlign − system), B=2000, seed 0.</p>
 <table>
 <tr><th>System (same 30 dev/val IDs)</th><th>de</th><th>fr</th><th>it</th><th>Strict macro</th><th>Paired diff [95% CI]</th></tr>
-<tr><td>SplitAlign (Apertus-8B, this run)</td><td>0.254</td><td>0.267</td><td>0.224</td><td>0.248</td><td>—</td></tr>
+<tr><td>SplitAlign (Apertus-8B, v1 run — defect above)</td><td>0.254</td><td>0.267</td><td>0.224</td><td>0.248</td><td>—</td></tr>
 <tr><td>EuroBERT-210m DiffAlign (reference)</td><td>0.055</td><td>0.196</td><td>0.198</td><td>0.150</td><td>+0.099 [−0.008, +0.184]</td></tr>
 <tr><td>mmBERT parallel_en-de</td><td>0.180</td><td>0.230</td><td>0.266</td><td>0.225</td><td>+0.023 [−0.073, +0.102]</td></tr>
 <tr><td>mmBERT parallel_en-sw</td><td>0.170</td><td>0.228</td><td>0.271</td><td>0.223</td><td>+0.025 [−0.070, +0.104]</td></tr>
 <tr><td>mmBERT parallel_en-de-fr-it</td><td>0.199</td><td>0.243</td><td>0.316</td><td>0.253</td><td>−0.004 [−0.103, +0.077]</td></tr>
 <tr><td>mmBERT parallel_all_1epoch</td><td>0.206</td><td>0.243</td><td>0.299</td><td>0.249</td><td>−0.001 [−0.095, +0.084]</td></tr>
 </table>
-<div class="warn"><b>Honesty note.</b> Exploratory dev-only figures on a 30-document subset:
-numerically above the preregistered EuroBERT reference but the paired CI includes zero, and
-indistinguishable from the stronger mmBERT variants — <b>no improvement over published encoders
-is claimed</b>, no held-out claim is made, and subset figures are not comparable to whole-dev
-(168 docs/lang) numbers. Paper prior-work figures are not reproduced here.</div>
+<div class="warn"><b>Honesty note.</b> Exploratory dev-only figures on a 30-document subset
+from the defect-affected run: numerically above the preregistered EuroBERT reference but the
+paired CI includes zero, and indistinguishable from the stronger mmBERT variants — <b>no
+improvement over published encoders is claimed</b>, no held-out claim is made, and subset
+figures are not comparable to whole-dev (168 docs/lang) numbers. Paper prior-work figures are
+not reproduced here.</div>
 
 <div class="cols"><div>
 <h2>5&nbsp; Reproducibility</h2>
@@ -112,17 +131,23 @@ builds Docker and runs a mock pipeline on a clean checkout; real runs set
 <code>SPLITALIGN_BACKEND=apertus</code> + <code>APERTUS_*</code> env vars
 (contradictory config fails closed). Every run writes an immutable
 <code>results/runs/&lt;ts-id&gt;/</code> scope — predictions, intended-ID manifest,
-details, redacted call log, per-mode and matched-ID evals — committed to git.
+details, run-tagged redacted call log (runs after this repair), per-mode and matched-ID
+evals — committed to git.
 Seed 0 throughout; payload-keyed cache gives bit-identical reruns. New run manifests
 record source commit/dirty state, prompt and package version, gold sha256, score config
 and caps (the 30-doc run predates this field: code state <code>7ad62c3..8480423</code>,
 left null, not back-filled). The static bilingual viewer (<code>track_2a/viewer/</code>)
 is exported from an explicit <code>--run</code> only and shows run id, intended vs produced
-modes, coverage and cap/partial status with real-vs-mock banners.</p>
+modes, coverage, cap/partial status, known configuration defects and real-vs-mock banners;
+inference provenance (prompt v1 for run 8de1aab7, from manifest/per-item records) is kept
+separate from the exporter's version. Demo recordings in <code>track_2a/demo/</code> predate
+the repair and are historical, not a corrected demo.</p>
 
 </div><div>
 <h2>6&nbsp; Limitations</h2>
-<p>Uniform token scores per aligned sentence except reported spans; monotone
+<p>The only real run used the wrong judge-prompt language for fr/it (§4); no corrected
+multilingual run exists. Historical call log unscoped; <code>calibrate</code> mock-only.
+Uniform token scores per aligned sentence except reported spans; monotone
 alignment only (no reordering); banded candidates never score far-off-diagonal
 pairs; judgments may omit end-of-document differences (handled, logged);
 held-out integrity is a development guard, not a proof.</p>
