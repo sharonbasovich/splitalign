@@ -30,6 +30,7 @@
     banner.textContent = E.mock
       ? "MOCK BACKEND — deterministic heuristics, NOT Apertus output. Plumbing demo only."
       : `Apertus backend — model: ${E.model || "unknown"}`;
+    renderRunStatus();
 
     const msel = $("modeSel");
     modes.forEach((m) => msel.add(new Option(m, m)));
@@ -43,7 +44,8 @@
     (E.limitations || []).forEach((l) => { const li = document.createElement("li"); li.textContent = l; lim.appendChild(li); });
     $("prov").textContent = JSON.stringify(
       { generated_utc: E.generated_utc, splitalign: E.splitalign_version,
-        prompt: E.prompt_version, backend: E.backend, model: E.model, split: E.split }, null, 2);
+        prompt: E.prompt_version, backend: E.backend, model: E.model, split: E.split,
+        run: E.run || null }, null, 2);
 
     document.addEventListener("keydown", (e) => {
       if (e.target.tagName === "SELECT" || e.target.tagName === "INPUT") return;
@@ -60,6 +62,43 @@
     render();
   }
 
+  function fmtCov(mode) {
+    const m = E.run.modes[mode];
+    const langs = Object.keys(m.intended);
+    const per = langs.map((l) => `${l} ${(m.completed || {})[l] || 0}/${m.intended[l]} of ${E.run.n_split[l]}`).join(", ");
+    return `${mode}: ${m.n_completed === undefined ? 0 : m.n_completed}/${m.n_intended} intended docs (${per})` +
+      (m.budget_capped ? ` — CAPPED: ${m.budget_capped}` : "") +
+      (!m.produced ? " — NOT PRODUCED in this run" : "") +
+      (m.summary_present ? "" : " — no run summary (did not finish)");
+  }
+
+  function renderRunStatus() {
+    const box = $("runStatus");
+    if (!box) return;
+    if (!E.run) {
+      box.className = "runstatus partial";
+      box.textContent = "No run scope recorded in this evidence file — coverage and comparability unknown.";
+      return;
+    }
+    const R = E.run;
+    const lines = [`Run ${R.id || R.run_id} (${R.started_utc || "?"})` +
+      (R.source && R.source.commit ? ` · source ${String(R.source.commit).slice(0, 12)}${R.source.dirty ? " (DIRTY)" : ""}` : " · source commit not recorded")];
+    Object.keys(R.modes).forEach((m) => lines.push(fmtCov(m)));
+    if (R.matched && Object.keys(R.matched.n_matched || {}).length) {
+      const mm = R.matched.n_matched;
+      lines.push("matched-ID comparison on " + Object.keys(mm).map((l) => `${l} ${mm[l]}`).join(", ") +
+        " docs" + (R.matched.macro_matched ? ` · macro splitalign ${fmt(R.matched.macro_matched.splitalign)} vs baseline ${fmt(R.matched.macro_matched.baseline)}` : ""));
+    } else {
+      lines.push("No matched-ID comparison in this run" +
+        (R.modes_intended_not_produced.length ? ` (${R.modes_intended_not_produced.join(", ")} intended but not produced)` : "") + ".");
+    }
+    if (R.partial) lines.unshift("PARTIAL / INCOMPLETE RUN — numbers below cover only the listed documents and support no complete comparison.");
+    box.className = "runstatus" + (R.partial ? " partial" : "");
+    box.textContent = lines.join("\n");
+  }
+
+  function fmt(v) { return (v === null || v === undefined || Number.isNaN(v)) ? "undefined" : Number(v).toFixed(3); }
+
   function renderItemSelector() {
     const sel = $("itemSel");
     sel.innerHTML = "";
@@ -74,10 +113,13 @@
     let es = "";
     if (ev && ev.per_language && ev.per_language[it.lang]) {
       const r = ev.per_language[it.lang];
-      es = ` · ${it.lang} Spearman ${Number(r.spearman).toFixed(3)}` +
+      es = ` · ${it.lang} Spearman ${fmt(r.spearman)}` +
+           (r.invalid_reason ? ` (${r.invalid_reason})` : "") +
+           (r.n_samples !== undefined ? ` on ${r.n_samples} docs` : "") +
            (E.mock ? " (mock — not a model result)" : "");
       if (ev.macro_spearman !== undefined)
-        es += ` · macro ${Number(ev.macro_spearman).toFixed(3)}`;
+        es += ` · strict macro ${fmt(ev.macro_spearman)}` +
+              (ev.macro_spearman === null && ev.macro_spearman_invalid_reason ? ` (${ev.macro_spearman_invalid_reason})` : "");
     }
     $("evalSummary").textContent = es;
     const st = it.stats || {};

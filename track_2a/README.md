@@ -56,7 +56,7 @@ python -m splitalign.run predict  --split val --lang de --limit 5 --backend mock
 python -m splitalign.run baseline --split val --lang de --limit 5 --backend mock
 python -m splitalign.run evaluate --pred results/predictions --split val --prefix splitalign_mock
 python -m splitalign.run calibrate --lang all          # grid on dev/train
-python -m splitalign.run export-viewer --split val     # -> viewer/evidence.js
+python -m splitalign.run export-viewer --split val --run results/runs/<run-id>  # explicit scope -> viewer/evidence.js
 ```
 
 ## Data
