@@ -330,7 +330,12 @@ def _extract_json_block(content: str) -> dict:
 
 
 def client_from_env_or_mock(backend: str, *, seed: int = 0):
-    """Return (client, backend_name). 'apertus' fails honestly if unconfigured."""
-    if backend == "mock" or os.environ.get("SPLITALIGN_BACKEND") == "mock":
+    """Return (client, backend_name) for the RESOLVED backend only.
+
+    SPLITALIGN_BACKEND is read once by ``run.resolve_backend``; nothing here
+    consults the env again, so a recorded backend name always reflects the
+    client that actually produced the output.
+    """
+    if backend == "mock":
         return MockApertusClient(seed=seed), "mock"
     return ApertusClient.from_env(), "apertus"

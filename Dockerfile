@@ -7,10 +7,13 @@ RUN pip install --no-cache-dir -r /app/requirements.txt -r /app/requirements-dev
 COPY track_2a /app/track_2a
 WORKDIR /app/track_2a
 ENV PYTHONPATH=/app/track_2a/src:/app/track_2a/src/vendor/swissgov_rsd
+# All produced artifacts (results/, viewer/) land on the bind-mounted /out.
+ENV SPLITALIGN_OUT=/out
 
 # Default entrypoint: run a bounded pipeline + evaluation + viewer export.
-# SPLITALIGN_BACKEND=mock (default) requires no credentials; set it to
-# "apertus" plus APERTUS_API_BASE/APERTUS_API_KEY/APERTUS_MODEL for real
-# inference — without them the run fails honestly with the variable names.
+# Backend resolution is single-source: explicit --backend >
+# SPLITALIGN_BACKEND env > mock. No credentials needed for mock; set
+# SPLITALIGN_BACKEND=apertus plus APERTUS_API_BASE/APERTUS_API_KEY/
+# APERTUS_MODEL for real inference — missing config fails honestly.
 ENTRYPOINT ["python", "-m", "splitalign.run"]
-CMD ["pipeline", "--split", "val", "--lang", "all", "--limit", "3", "--backend", "mock", "--bootstrap", "0"]
+CMD ["pipeline", "--split", "val", "--lang", "all", "--limit", "3", "--bootstrap", "0"]

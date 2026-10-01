@@ -7,6 +7,7 @@ for comparison.
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -80,6 +81,35 @@ def predict_item(item: dict, judge: Judge,
     return {"record": record, "detail": detail}
 
 
+_PAIR_RE = re.compile(
+    r'\[\s*"((?:[^"\\]|\\.)*)"\s*,\s*"?(-?\d+(?:\.\d+)?)"?\s*\]')
+
+
+def salvage_sentence_pairs(text: str, key: str) -> list:
+    """Recover well-formed [token, label] pairs from a corrupted JSON blob.
+
+    Used only when strict JSON extraction fails: locate the ``"key"`` section
+    and regex-scan forward for complete pairs, stopping at the next section
+    key or when unparseable structure appears. The recovered pairs still go
+    through the official ``parse_token_labels`` matcher.
+    """
+    start = text.find(f'"{key}"')
+    if start < 0:
+        return []
+    tail = text[start + len(key) + 1:]
+    end = tail.find('"sentence')
+    if end > 0:
+        tail = tail[:end]
+    out = []
+    for m in _PAIR_RE.finditer(tail):
+        try:
+            tok = json.loads(f'"{m.group(1)}"')
+        except json.JSONDecodeError:
+            continue
+        out.append([tok, float(m.group(2))])
+    return out
+
+
 def predict_baseline_item(item: dict, judge: Judge) -> dict:
     """Whole-document prompt baseline (official-style token annotation)."""
     tokens_a = item["text_a"].split()
@@ -101,6 +131,12 @@ def predict_baseline_item(item: dict, judge: Judge) -> dict:
         except Exception:
             data = {}
         s1, s2 = data.get("sentence1"), data.get("sentence2")
+        if not isinstance(s1, list) or not isinstance(s2, list):
+            # strict extraction failed (truncated/corrupt JSON): salvage
+            # complete [token, label] pairs, then keep official parsing.
+            s1 = salvage_sentence_pairs(text, "sentence1")
+            s2 = salvage_sentence_pairs(text, "sentence2")
+            data = {"sentence1": s1, "sentence2": s2}
         complete = (isinstance(s1, list) and len(s1) >= 0.5 * len(tokens_a)
                     and isinstance(s2, list) and len(s2) >= 0.5 * len(tokens_b))
         if complete or repairs >= judge.max_repairs:

@@ -71,3 +71,20 @@ def test_apertus_missing_credentials_fails_honestly(tmp_path, monkeypatch):
         make_judge("apertus", tmp_path, "dev/val", "x", 0)
     msg = str(e.value)
     assert "APERTUS_API_BASE" in msg and "APERTUS_API_KEY" in msg and "APERTUS_MODEL" in msg
+
+
+def test_backend_resolution_single_source(monkeypatch):
+    """env vs CLI must be a single source; contradictions are config errors."""
+    import pytest
+    from splitalign.run import resolve_backend
+    monkeypatch.delenv("SPLITALIGN_BACKEND", raising=False)
+    assert resolve_backend(None) == "mock"
+    assert resolve_backend("apertus") == "apertus"
+    monkeypatch.setenv("SPLITALIGN_BACKEND", "apertus")
+    assert resolve_backend(None) == "apertus"      # env supplies the default
+    assert resolve_backend("apertus") == "apertus"  # agreement is fine
+    with pytest.raises(SystemExit):                 # contradiction is an error
+        resolve_backend("mock")
+    monkeypatch.setenv("SPLITALIGN_BACKEND", "bogus")
+    with pytest.raises(SystemExit):
+        resolve_backend(None)

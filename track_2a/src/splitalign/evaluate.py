@@ -25,6 +25,16 @@ from nlpstats.correlations import bootstrap, correlate  # noqa: E402
 
 from . import guard  # noqa: E402
 
+# The official LLM scoring drops the ids in upstream ``list_to_drop.txt``
+# (applied only to LLM-format predictions). The subset of those ids that
+# lives inside the dev firewall is enumerated here — dev ids only, never
+# fetched from or joined to any held-out file. Verified present in
+# data/gold/dev/{train,val}: suffixes 18,100,106,153,196 x {de,fr,it}.
+DEV_DROP_IDS = frozenset(
+    f"admin_{lang}_{n}"
+    for lang in ("de", "fr", "it")
+    for n in (18, 100, 106, 153, 196))
+
 
 @dataclass
 class LangResult:
@@ -56,7 +66,8 @@ def _correlate(pred_labels: list[float], gold_labels: list[float],
 
 
 def evaluate_predictions(pred_records: list[dict], gold_path: Path,
-                         lang: str, n_resamples: int = 1000) -> LangResult:
+                         lang: str, n_resamples: int = 1000,
+                         drop_ids: frozenset | None = None) -> LangResult:
     """One language: encoder-format predictions vs gold, official semantics."""
     gold_samples = load_gold_data(guard.guard_data_dir(gold_path))
     by_id = {r["id"]: r for r in pred_records}
@@ -65,6 +76,10 @@ def evaluate_predictions(pred_records: list[dict], gold_path: Path,
     gold_items = [json.loads(line) for line in
                   guard.guard_data_dir(gold_path).read_text().splitlines() if line.strip()]
     guard.assert_ids_allowed([r["id"] for r in gold_items])
+    if drop_ids:
+        keep = [g["id"] not in drop_ids for g in gold_items]
+        gold_items = [g for g, k in zip(gold_items, keep) if k]
+        gold_samples = [g for g, k in zip(gold_samples, keep) if k]
 
     pred_labels: list[float] = []
     gold_labels: list[float] = []
@@ -116,6 +131,7 @@ def evaluate_split(pred_dir: Path, split: str, langs=("de", "fr", "it"),
     """
     norm = guard.normalize_split(split)
     results = {}
+    results_excl = {}
     for lang in langs:
         gold = guard.gold_path(norm, lang)
         if prefix:
@@ -131,6 +147,16 @@ def evaluate_split(pred_dir: Path, split: str, langs=("de", "fr", "it"),
                 "pass --prefix")
         recs = [json.loads(l) for l in cand[0].read_text().splitlines() if l.strip()]
         results[lang] = evaluate_predictions(recs, gold, lang, n_resamples)
+        results_excl[lang] = evaluate_predictions(recs, gold, lang, n_resamples,
+                                                  drop_ids=DEV_DROP_IDS)
     macro = float(np.mean([r.spearman for r in results.values()])) if results else float("nan")
-    return {"split": norm, "per_language": {k: vars(v) for k, v in results.items()},
-            "macro_spearman": macro}
+    macro_excl = (float(np.mean([r.spearman for r in results_excl.values()]))
+                  if results_excl else float("nan"))
+    return {"split": norm,
+            "per_language": {k: vars(v) for k, v in results.items()},
+            "macro_spearman": macro,
+            # official LLM scoring also drops list_to_drop.txt ids; report the
+            # same metric excluding the dev subset of those ids for parity.
+            "per_language_excl_dev_drop": {k: vars(v) for k, v in results_excl.items()},
+            "macro_spearman_excl_dev_drop": macro_excl,
+            "dev_drop_ids": sorted(DEV_DROP_IDS)}

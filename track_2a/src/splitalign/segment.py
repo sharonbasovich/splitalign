@@ -8,7 +8,6 @@ mapping is exact even with repeated tokens.
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass
 
 
@@ -27,7 +26,6 @@ class Segment:
     end_token: int    # exclusive token index
 
 
-PUNCT_CHARS = set(".,;:!?…\"'`´‘’“”()[]{}<>«»-–—/\\|@#$%^&*_+=~")
 TERMINAL = {".", "!", "?", "…", "。", "！", "？"}
 # Common abbreviations after which we do not split.
 ABBREVIATIONS = {
@@ -48,14 +46,10 @@ def tokens_of(text: str) -> list[Token]:
 
 
 def is_punctuation(tok: str) -> bool:
-    """True when every character is punctuation (official convention: -1)."""
-    if not tok:
-        return False
-    for ch in tok:
-        cat = unicodedata.category(ch)
-        if not (cat.startswith("P") or cat.startswith("S") or ch in PUNCT_CHARS):
-            return False
-    return True
+    """Official -1 convention, verified against every dev gold token:
+    exactly one ASCII non-alphanumeric character (e.g. ``.`` ``-`` ``%``).
+    Multi-char tokens and non-ASCII symbols (– — « » © € …) are NOT -1."""
+    return len(tok) == 1 and ord(tok) < 128 and not tok.isalnum()
 
 
 def _ends_terminal(tok: str) -> bool:

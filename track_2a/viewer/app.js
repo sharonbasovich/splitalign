@@ -92,6 +92,10 @@
     const box = $("alignView");
     box.innerHTML = "";
     if (!it) return;
+    if (it.failed) {
+      box.innerHTML = `<div class="pair"><div class="cell" style="grid-column:1/4"><em>Item failed: ${esc(it.error || "backend error")} (no prediction)</em></div></div>`;
+      return;
+    }
     if (!it.ops) {
       box.innerHTML = `<div class="pair"><div class="cell" style="grid-column:1/4"><em>Whole-document baseline — no alignment operations.</em></div></div>`;
       return;

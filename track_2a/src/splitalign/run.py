@@ -15,13 +15,15 @@ from __future__ import annotations
 import argparse
 import itertools
 import json
+import os
+import shutil
 import sys
 import time
 from pathlib import Path
 
 from . import PROMPT_VERSION, __version__, guard
 from .align import AlignConfig
-from .apertus import MissingCredentials
+from .apertus import ApertusUnavailable, MissingCredentials
 from .evaluate import evaluate_predictions, evaluate_split
 from .fetch_data import ALLOWLIST, fetch, load_gold_items, write_manifest
 from .pipeline import (make_judge, predict_baseline_item, predict_item,
@@ -30,11 +32,32 @@ from .score import ScoreConfig
 from .viewer_export import export_evidence
 
 TRACK_DIR = guard.TRACK_DIR
-RESULTS_DIR = TRACK_DIR / "results"
+# SPLITALIGN_OUT redirects every produced artifact (results + viewer) — the
+# Docker image sets it to /out, which the Makefile bind-mounts to ./out.
+OUT_DIR = Path(os.environ.get("SPLITALIGN_OUT", str(TRACK_DIR)))
+RESULTS_DIR = OUT_DIR / "results"
 PRED_DIR = RESULTS_DIR / "predictions"
 DETAIL_DIR = RESULTS_DIR / "details"
-EVIDENCE_PATH = TRACK_DIR / "viewer" / "evidence.js"
+EVIDENCE_PATH = OUT_DIR / "viewer" / "evidence.js"
 CONFIG_PATH = RESULTS_DIR / "calibration.json"
+
+
+def resolve_backend(cli_backend: str | None) -> str:
+    """Single source of truth for the backend.
+
+    Precedence: explicit ``--backend`` > ``SPLITALIGN_BACKEND`` env > mock.
+    A set env that contradicts an explicit CLI value is a configuration
+    error — never silently relabel output provenance.
+    """
+    env = os.environ.get("SPLITALIGN_BACKEND") or None
+    if env is not None and env not in ("mock", "apertus"):
+        raise SystemExit(
+            f"invalid SPLITALIGN_BACKEND={env!r}; expected 'mock' or 'apertus'")
+    if cli_backend and env and cli_backend != env:
+        raise SystemExit(
+            f"contradictory backend config: --backend {cli_backend} vs "
+            f"SPLITALIGN_BACKEND={env}; set only one source")
+    return cli_backend or env or "mock"
 
 
 def _items(split: str, lang: str, limit: int | None, offset: int = 0):
@@ -77,11 +100,21 @@ def _predict(args, mode: str) -> int:
         recs = []
         for item in _items(split, lang, args.limit, args.offset):
             judge, backend = make_judge(args.backend, RESULTS_DIR, split, item["id"], seed)
-            if mode == "baseline":
-                out = predict_baseline_item(item, judge)
-            else:
-                out = predict_item(item, judge,
-                                   score_cfg=_load_score_cfg(args))
+            try:
+                if mode == "baseline":
+                    out = predict_baseline_item(item, judge)
+                else:
+                    out = predict_item(item, judge,
+                                       score_cfg=_load_score_cfg(args))
+            except ApertusUnavailable as e:
+                # truthful per-item failure: no prediction written, run continues
+                det = {"id": item["id"], "lang": lang, "failed": True,
+                       "error": str(e)[:300],
+                       "provenance": provenance(backend, judge,
+                                                {"mode": mode, "split": split})}
+                all_details.append(det)
+                print(f"  {item['id']}: FAILED ({mode}) {e}", file=sys.stderr)
+                continue
             recs.append(out["record"])
             det = dict(out["detail"])
             det["id"] = item["id"]
@@ -181,9 +214,20 @@ def cmd_export_viewer(args) -> int:
             evals[mode] = json.loads(ep.read_text())
     if not items_by_mode:
         raise SystemExit("no details found; run predict first")
+    # actual executed model, from recorded provenance (never assumed)
+    model = next((it["provenance"].get("model")
+                  for d in items_by_mode.values() for it in d
+                  if it.get("provenance", {}).get("model")), None)
     out = export_evidence(items_by_mode, EVIDENCE_PATH, backend=args.backend,
-                          model=None, split=split, evaluation=evals,
+                          model=model, split=split, evaluation=evals,
                           limitations=_limitations(args.backend))
+    # keep the viewer self-contained wherever OUT_DIR points
+    for name in ("index.html", "style.css", "app.js"):
+        src = TRACK_DIR / "viewer" / name
+        dst = EVIDENCE_PATH.parent / name
+        if src.resolve() != dst.resolve():
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
     print(f"evidence -> {out}")
     return 0
 
@@ -247,7 +291,9 @@ def main(argv=None) -> int:
         p.add_argument("--lang", default="all")
         p.add_argument("--limit", type=int, default=None)
         p.add_argument("--offset", type=int, default=0)
-        p.add_argument("--backend", default="mock", choices=["mock", "apertus"])
+        p.add_argument("--backend", default=None, choices=["mock", "apertus"],
+                       help="inference backend; default: SPLITALIGN_BACKEND env "
+                            "else mock. Contradicting the env var is an error.")
         p.add_argument("--seed", type=int, default=0)
         p.add_argument("--bootstrap", type=int, default=1000)
         p.add_argument("--cfg", default=None)
@@ -270,11 +316,14 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("export-viewer")
     p.add_argument("--split", default="val")
-    p.add_argument("--backend", default="mock")
+    p.add_argument("--backend", default=None, choices=["mock", "apertus"],
+                   help="see predict --backend")
     p.add_argument("--mode", default="splitalign")
     p.set_defaults(fn=cmd_export_viewer)
 
     args = ap.parse_args(argv)
+    if getattr(args, "backend", None) is not None or hasattr(args, "backend"):
+        args.backend = resolve_backend(args.backend)
     try:
         return args.fn(args)
     except MissingCredentials as e:

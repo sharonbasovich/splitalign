@@ -14,12 +14,34 @@ def test_tokens_preserve_offsets():
 
 
 def test_punctuation_detection():
-    assert is_punctuation(".")
-    assert is_punctuation("—")
-    assert is_punctuation("(?)")
+    """Official -1 convention: single ASCII non-alnum char only."""
+    for p in ". , ; : ! ? - / % + | & ' \" @ * ( ) < > [ ] _":
+        assert is_punctuation(p), p
+    assert not is_punctuation("—")   # em-dash: scored, not -1 in gold
+    assert not is_punctuation("–")   # en-dash
+    assert not is_punctuation("«")   # guillemet
+    assert not is_punctuation("©")
+    assert not is_punctuation("€")
+    assert not is_punctuation("…")
+    assert not is_punctuation("(?)")  # multi-char tokens are never -1
     assert not is_punctuation("word")
     assert not is_punctuation("6.8")
     assert not is_punctuation("end.")
+
+
+def test_punctuation_parity_with_dev_gold():
+    """is_punctuation must match gold -1 labels on every dev token."""
+    import glob
+    import json
+    mismatches = []
+    for f in glob.glob("data/gold/dev/*/gold_*.jsonl"):
+        for line in open(f):
+            g = json.loads(line)
+            for side in ("a", "b"):
+                for tok, lab in zip(g[f"text_{side}"].split(), g[f"labels_{side}"]):
+                    if is_punctuation(tok) != (lab == -1):
+                        mismatches.append((f, tok, lab))
+    assert not mismatches, mismatches[:10]
 
 
 def test_sentence_split():
