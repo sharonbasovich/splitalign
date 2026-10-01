@@ -1,0 +1,91 @@
+{
+  "run_id": "20261001T212533Z-1361c568",
+  "backend": "mock",
+  "split": "dev/val",
+  "started_utc": "2026-10-01T21:25:33Z",
+  "modes": {
+    "splitalign": {
+      "intended_ids": {
+        "de": [
+          "admin_de_17",
+          "admin_de_18",
+          "admin_de_20",
+          "admin_de_25",
+          "admin_de_41",
+          "admin_de_43",
+          "admin_de_49",
+          "admin_de_53",
+          "admin_de_58",
+          "admin_de_68"
+        ],
+        "fr": [
+          "admin_fr_17",
+          "admin_fr_18",
+          "admin_fr_20",
+          "admin_fr_25",
+          "admin_fr_41",
+          "admin_fr_43",
+          "admin_fr_49",
+          "admin_fr_53",
+          "admin_fr_58",
+          "admin_fr_68"
+        ],
+        "it": [
+          "admin_it_17",
+          "admin_it_18",
+          "admin_it_20",
+          "admin_it_25",
+          "admin_it_41",
+          "admin_it_43",
+          "admin_it_49",
+          "admin_it_53",
+          "admin_it_58",
+          "admin_it_68"
+        ]
+      },
+      "n_intended": 30
+    },
+    "baseline": {
+      "intended_ids": {
+        "de": [
+          "admin_de_17",
+          "admin_de_18",
+          "admin_de_20",
+          "admin_de_25",
+          "admin_de_41",
+          "admin_de_43",
+          "admin_de_49",
+          "admin_de_53",
+          "admin_de_58",
+          "admin_de_68"
+        ],
+        "fr": [
+          "admin_fr_17",
+          "admin_fr_18",
+          "admin_fr_20",
+          "admin_fr_25",
+          "admin_fr_41",
+          "admin_fr_43",
+          "admin_fr_49",
+          "admin_fr_53",
+          "admin_fr_58",
+          "admin_fr_68"
+        ],
+        "it": [
+          "admin_it_17",
+          "admin_it_18",
+          "admin_it_20",
+          "admin_it_25",
+          "admin_it_41",
+          "admin_it_43",
+          "admin_it_49",
+          "admin_it_53",
+          "admin_it_58",
+          "admin_it_68"
+        ]
+      },
+      "n_intended": 30
+    }
+  },
+  "note": "intended IDs declared before inference; compare methods only on identical produced IDs; a mode missing from 'modes' never ran in this scope"
+}
