@@ -70,7 +70,8 @@ class CallLogger:
 
     def log(self, *, split: str, item_id: str, kind: str, messages,
             result: ChatResult | None, ok: bool, error: str | None,
-            cached: bool) -> None:
+            cached: bool, backend: str | None = None,
+            model: str | None = None) -> None:
         if not self.path:
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -78,8 +79,9 @@ class CallLogger:
         rec = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "split": split, "item_id": item_id, "kind": kind,
-            "backend": result.backend if result else None,
-            "model": result.model if result else None,
+            # actual backend/model on EVERY record, incl. cache-hit/error paths
+            "backend": (result.backend if result else backend),
+            "model": (result.model if result else model),
             "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest(),
             "prompt_chars": len(prompt_text),
             "prompt_tokens": result.prompt_tokens if result else None,

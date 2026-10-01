@@ -25,6 +25,16 @@ Specification implemented:
   match but does keep the one-step advance on a next-position match.
 * Similarity ``s`` maps to a difference label by ``1 - s/5`` for
   ``s >= 0``; ``-1`` stays ``-1``.
+
+Schema policy (divergence from upstream, deliberate and documented):
+within the defined schema — ``str`` entries and ``[token, label]`` pairs
+with a numeric label — this implementation is behavior-identical to the
+reference harness (parity tests: tests/test_eval_parity.py). Entries
+outside that schema (empty lists, non-sequence values, dicts) are
+skipped consistently here, where the reference either crashes or treats
+them unpredictably; malformed model output must degrade gracefully, so
+we reject invalid schema explicitly rather than claiming unverifiable
+parity on undefined input.
 """
 from __future__ import annotations
 
@@ -92,11 +102,11 @@ def parse_token_labels(tokens: list[str], token_predictions,
         if isinstance(entry, str):
             emitted, value = entry, None
         else:
-            try:
-                entry = list(entry)
-            except TypeError:
+            # out-of-schema entries (dicts, ints, empty/non-str lists) are
+            # rejected explicitly; the reference crashes or misbehaves on them
+            if not isinstance(entry, (list, tuple)):
                 continue
-            if not entry:
+            if not entry or not isinstance(entry[0], str):
                 continue
             emitted = entry[0]
             value = entry[1] if len(entry) > 1 else None

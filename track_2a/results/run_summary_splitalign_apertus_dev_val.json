@@ -1,0 +1,18 @@
+{
+  "mode": "splitalign",
+  "backend": "apertus",
+  "split": "dev/val",
+  "completed_ids": {
+    "de": [
+      "admin_de_17"
+    ]
+  },
+  "remaining_ids": {
+    "de": []
+  },
+  "n_planned": 1,
+  "n_completed": 1,
+  "new_api_requests": 0,
+  "new_api_tokens": 0,
+  "elapsed_s": 0.0
+}

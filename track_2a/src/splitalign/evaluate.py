@@ -188,6 +188,8 @@ def evaluate_split(pred_dir: Path, split: str, langs=("de", "fr", "it"),
                                                   drop_ids=DEV_DROP_IDS)
     if require_full_coverage:
         gaps = {k: r.missing_ids for k, r in results.items() if r.missing_ids}
+        for lang in set(langs) - set(results):
+            gaps[lang] = ["<entire language: no predictions>"]
         if gaps:
             raise SystemExit(
                 "incomplete prediction coverage: "

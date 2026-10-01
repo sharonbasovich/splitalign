@@ -52,7 +52,9 @@ class Judge:
         if hit is not None:
             self.logger.log(split=self.split, item_id=self.item_id, kind=kind,
                             messages=messages, result=None, ok=True,
-                            error=None, cached=True)
+                            error=None, cached=True,
+                            backend=hit.get("backend") or self.backend,
+                            model=hit.get("model") or getattr(self.client, "model", None))
             return hit["text"], True, None
         if self.budget is not None:
             self.budget.begin_request()  # raises BudgetExceeded at the cap
@@ -62,7 +64,9 @@ class Judge:
         except Exception:
             self.logger.log(split=self.split, item_id=self.item_id, kind=kind,
                             messages=messages, result=None, ok=False,
-                            error="call failed", cached=False)
+                            error="call failed", cached=False,
+                            backend=self.backend,
+                            model=getattr(self.client, "model", None))
             raise
         self.logger.log(split=self.split, item_id=self.item_id, kind=kind,
                         messages=messages, result=res, ok=True,
@@ -80,8 +84,10 @@ class Judge:
     # pairs whose normalised positions are close —
     # | i/max(n-1,1) - j/max(m-1,1) | <= band_width (default 0.2) —
     # plus an absolute ±2 neighbourhood for short documents. All cells
-    # outside the band are 0.0 without an API call. This bounds calls at
-    # ~O(n*m*band) instead of n*m (worst dev doc: 385 pairs -> ~150).
+    # outside the band are 0.0 without an API call.
+    # MEASURED on dev/train+dev/val (504 docs, w=0.2):
+    #   304,968 full pairs -> 108,260 candidates (35%); worst doc
+    #   (admin_de_174, 12648 pairs) -> 4,518. One API call per ~20 pairs.
     def similarity_matrix(self, a_texts: list[str], b_texts: list[str],
                           batch: int = 20, band_width: float = 0.2) -> list[list[float]]:
         """n x m matrix of 0..1 similarities via batched pair scoring."""

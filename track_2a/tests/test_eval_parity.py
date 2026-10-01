@@ -39,6 +39,11 @@ def test_parse_token_labels_semantics():
     # non-numeric label keeps the fallback (and does not advance)
     labs = parse_token_labels(["a", "b"], [["a", "oops"], ["b", 2]], 0.)
     assert labs == [0.0, 2.0]
+    # out-of-schema entries (empty list, non-sequence, dict) are rejected
+    # explicitly — the reference crashes/misbehaves on these; we skip.
+    labs = parse_token_labels(["a", "b"], [[], 7, {"a": 1}, ["a", 1],
+                                         ["b", 2]], 0.)
+    assert labs == [1.0, 2.0]
 
 
 def test_label_mapping():
@@ -121,3 +126,22 @@ def test_coverage_reported(tmp_path):
     assert res.n_gold_items == len(items)
     assert res.coverage == pytest.approx(1 / len(items))
     assert len(res.missing_ids) == len(items) - 1
+
+
+def test_require_full_fails_on_absent_language(tmp_path):
+    """--require-full: a required language with zero predictions fails."""
+    from splitalign import guard
+    from splitalign.evaluate import evaluate_split
+    from splitalign.fetch_data import load_gold_items
+    items = load_gold_items("dev/val", "de")
+    p = tmp_path / "mod_x_admin_de.jsonl"
+    with p.open("w") as f:
+        for it in items:
+            f.write(json.dumps({"id": it["id"], "text_a": it["text_a"],
+                                "text_b": it["text_b"],
+                                "labels_a": it["labels_a"],
+                                "labels_b": it["labels_b"]},
+                               ensure_ascii=False) + "\n")
+    with pytest.raises(SystemExit, match="entire language"):
+        evaluate_split(tmp_path, "dev/val", n_resamples=0,
+                       prefix="mod_x", require_full_coverage=True)
