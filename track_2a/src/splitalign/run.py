@@ -96,8 +96,9 @@ def _new_run_dir() -> Path:
 def _source_info() -> dict:
     """Exact source state of THIS process — recorded, never inferred later.
 
-    Falls back to SPLITALIGN_SOURCE_COMMIT (e.g. baked into a Docker image)
-    and reports null when neither git nor the env var is available.
+    Falls back to SPLITALIGN_SOURCE_COMMIT / SPLITALIGN_SOURCE_DIRTY (passed
+    into the Docker container by the Makefile) and reports null when neither
+    git nor the env vars are available.
     """
     info = {"commit": None, "dirty": None, "note": None}
     try:
@@ -114,7 +115,11 @@ def _source_info() -> dict:
         pass
     if info["commit"] is None and os.environ.get("SPLITALIGN_SOURCE_COMMIT"):
         info["commit"] = os.environ["SPLITALIGN_SOURCE_COMMIT"]
-        info["note"] = "commit from SPLITALIGN_SOURCE_COMMIT env; dirty state unknown"
+        dirty = os.environ.get("SPLITALIGN_SOURCE_DIRTY")
+        info["dirty"] = {"0": False, "1": True}.get(dirty)
+        info["note"] = ("commit/dirty from SPLITALIGN_SOURCE_* env (host checkout)"
+                        if info["dirty"] is not None else
+                        "commit from SPLITALIGN_SOURCE_COMMIT env; dirty state unknown")
     elif info["commit"] is None:
         info["note"] = "git metadata unavailable (not a git checkout)"
     return info
