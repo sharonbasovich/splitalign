@@ -51,6 +51,11 @@ def _correlate(pred_labels: list[float], gold_labels: list[float],
                n_resamples: int) -> tuple[float, float, float, float]:
     fp = [p for p, g in zip(pred_labels, gold_labels) if g != -1]
     fg = [g for g in gold_labels if g != -1]
+    nan = float("nan")
+    if len(fp) < 2:
+        # no/insufficient matched labels — correlation undefined (NaN),
+        # not a crash and never a fabricated 0
+        return nan, None, None, nan
     pa = np.expand_dims(np.array(fp), 0)
     ga = np.expand_dims(np.array(fg), 0)
     spear = correlate(pa, ga, level="global", coefficient="spearman")
@@ -205,11 +210,11 @@ def evaluate_split(pred_dir: Path, split: str, langs=("de", "fr", "it"),
         languages is reported separately with its count and must not be
         used as the headline comparison metric.
         """
-        required = set(res_map.keys())
+        required = set(langs)
         defined = {k: v.spearman for k, v in res_map.items()
                    if v.spearman == v.spearman}
         strict = (sum(defined.values()) / len(defined)
-                  if len(defined) == len(required) else None)
+                  if defined and len(defined) == len(required) else None)
         descr = sum(defined.values()) / len(defined) if defined else None
         return strict, descr, len(defined)
     macro, descr, n_def = _macros(results)

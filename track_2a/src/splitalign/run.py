@@ -19,13 +19,14 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from pathlib import Path
 
 from . import PROMPT_VERSION, __version__, guard
 from .align import AlignConfig
 from .apertus import (ApiBudget, ApertusUnavailable, BudgetExceeded,
                       MissingCredentials)
-from .evaluate import evaluate_predictions, evaluate_split
+from .evaluate import _dump, evaluate_predictions, evaluate_split
 from .fetch_data import ALLOWLIST, fetch, load_gold_items, write_manifest
 from .pipeline import (make_judge, predict_baseline_item, predict_item,
                        provenance)
@@ -74,9 +75,38 @@ def _langs(lang: str) -> list[str]:
     return list(guard.ALLOWED_LANGS) if lang == "all" else [lang]
 
 
-def _pred_path(backend: str, tag: str, lang: str) -> Path:
-    PRED_DIR.mkdir(parents=True, exist_ok=True)
-    return PRED_DIR / f"{tag}_{backend}_admin_{lang}.jsonl"
+def _pred_path(pred_dir: Path, backend: str, tag: str, lang: str) -> Path:
+    pred_dir.mkdir(parents=True, exist_ok=True)
+    return pred_dir / f"{tag}_{backend}_admin_{lang}.jsonl"
+
+
+def _new_run_dir() -> Path:
+    """Fresh immutable run scope: all artifacts of one invocation live here
+    so partial/capped outputs can never mix with earlier runs."""
+    d = RESULTS_DIR / "runs" / (
+        f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-"
+        f"{uuid.uuid4().hex[:8]}")
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _write_manifest(run_dir: Path, mode: str, planned_ids: dict,
+                    backend: str, split: str) -> None:
+    """Intended-ID manifest, updated as each mode declares its plan."""
+    man_path = run_dir / "manifest.json"
+    man = json.loads(man_path.read_text()) if man_path.exists() else {
+        "run_id": run_dir.name,
+        "backend": backend,
+        "split": split,
+        "started_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "modes": {},
+        "note": ("intended IDs declared before inference; compare methods "
+                 "only on identical produced IDs; a mode missing from "
+                 "'modes' never ran in this scope"),
+    }
+    man["modes"][mode] = {"intended_ids": planned_ids,
+                          "n_intended": sum(len(v) for v in planned_ids.values())}
+    man_path.write_text(json.dumps(man, indent=2))
 
 
 def cmd_fetch_data(args) -> int:
@@ -105,13 +135,19 @@ def _predict(args, mode: str) -> int:
     all_details = []
     capped = None
     completed_ids: dict[str, list[str]] = {}
-    planned_ids: dict[str, list[str]] = {}
+    run_dir = getattr(args, "_run_dir", None)
+    if run_dir is None:
+        run_dir = _new_run_dir()
+        args._run_dir = run_dir
+    planned_ids = {l: [it["id"] for it in _items(split, l, args.limit,
+                                                  args.offset)]
+                   for l in _langs(args.lang)}
+    _write_manifest(run_dir, mode, planned_ids, args.backend, split)
     t0 = time.monotonic()
     try:
         for lang in _langs(args.lang):
             recs = []
             wanted = _items(split, lang, args.limit, args.offset)
-            planned_ids[lang] = [it["id"] for it in wanted]
             completed_ids[lang] = []
             for item in wanted:
                 judge, backend = make_judge(args.backend, RESULTS_DIR, split,
@@ -146,7 +182,7 @@ def _predict(args, mode: str) -> int:
                                                {"mode": mode, "split": split})
                 all_details.append(det)
                 print(f"  {item['id']}: done ({mode})", file=sys.stderr)
-            path = _pred_path(backend, mode, lang)
+            path = _pred_path(run_dir, backend, mode, lang)
             with path.open("w") as f:
                 for r in recs:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
@@ -156,14 +192,13 @@ def _predict(args, mode: str) -> int:
         capped = str(e)
         print(f"BUDGET CAP: {capped} — writing partial results", file=sys.stderr)
         if recs:  # `lang`/`recs` remain bound from the interrupted iteration
-            path = _pred_path(backend, mode, lang)
+            path = _pred_path(run_dir, backend, mode, lang)
             with path.open("w") as f:
                 for r in recs:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             print(f"wrote {len(recs)} PARTIAL predictions -> {path}",
                   file=sys.stderr)
-    DETAIL_DIR.mkdir(parents=True, exist_ok=True)
-    det_path = DETAIL_DIR / f"{mode}_{args.backend}_{split.replace('/', '_')}.json"
+    det_path = run_dir / f"details_{mode}_{args.backend}_{split.replace('/', '_')}.json"
     det_path.write_text(json.dumps(all_details, ensure_ascii=False, indent=1))
     print(f"details -> {det_path}")
     # run summary: completed ids, coverage, usage, remainder — never hide a cap
@@ -191,7 +226,7 @@ def _predict(args, mode: str) -> int:
         "caution": ("PARTIAL RUN — do not treat coverage as complete"
                     if capped else None),
     }
-    spath = RESULTS_DIR / f"run_summary_{mode}_{args.backend}_{split.replace('/', '_')}.json"
+    spath = run_dir / f"run_summary_{mode}_{args.backend}_{split.replace('/', '_')}.json"
     spath.write_text(json.dumps({k: v for k, v in summary.items() if v is not None},
                                 indent=2))
     print(f"run summary -> {spath}")
@@ -261,15 +296,31 @@ def cmd_export_viewer(args) -> int:
     tag = split.replace("/", "_")
     items_by_mode: dict[str, list] = {}
     evals: dict = {}
-    modes = sorted(p.name.split("_" + args.backend + "_")[0]
-                   for p in DETAIL_DIR.glob(f"*_{args.backend}_{tag}.json"))
-    for mode in modes:
-        det_path = DETAIL_DIR / f"{mode}_{args.backend}_{tag}.json"
-        if det_path.exists():
-            items_by_mode[mode] = json.loads(det_path.read_text())
-        ep = RESULTS_DIR / f"eval_{mode}_{args.backend}_{tag}.json"
-        if ep.exists():
-            evals[mode] = json.loads(ep.read_text())
+    # locate the run scope: explicit --run > current run > newest run dir
+    run_dir = getattr(args, "_run_dir", None) or (
+        Path(args.run) if getattr(args, "run", None) else None)
+    det_paths: list[Path] = []
+    det_dir: Path | None = None
+    search = [run_dir] if run_dir else (
+        sorted((RESULTS_DIR / "runs").iterdir(), reverse=True)
+        if (RESULTS_DIR / "runs").exists() else [])
+    for d in search:
+        det_paths = sorted(d.glob(f"details_*_{args.backend}_{tag}.json"))
+        if det_paths:
+            det_dir = d
+            break
+    if not det_paths:  # legacy flat layout (historical artifacts)
+        det_dir = DETAIL_DIR
+        det_paths = sorted(DETAIL_DIR.glob(f"*_{args.backend}_{tag}.json"))
+    for det_path in det_paths:
+        mode = det_path.name.split(f"_{args.backend}_{tag}")[0] \
+            .removeprefix("details_")
+        items_by_mode[mode] = json.loads(det_path.read_text())
+        for base in (det_dir, RESULTS_DIR):
+            ep = base / f"eval_{mode}_{args.backend}_{tag}.json"
+            if ep.exists():
+                evals[mode] = json.loads(ep.read_text())
+                break
     if not items_by_mode:
         raise SystemExit("no details found; run predict first")
     # actual executed model, from recorded provenance (never assumed)
@@ -303,20 +354,77 @@ def _limitations(backend: str) -> list[str]:
     return lims
 
 
+def _matched_eval(run_dir: Path, split: str, langs, backend: str,
+                  n_resamples: int) -> dict:
+    """Compare methods ONLY on identical produced IDs.
+
+    Per language, the matched set is the exact intersection of the IDs
+    each method actually emitted — never a union, never the gold set.
+    """
+    per_lang = {}
+    macros = {"splitalign": [], "baseline": []}
+    for lang in langs:
+        recs = {}
+        for mode in ("splitalign", "baseline"):
+            p = run_dir / f"{mode}_{backend}_admin_{lang}.jsonl"
+            recs[mode] = {r["id"]: r for r in
+                          (json.loads(l) for l in
+                           p.read_text().splitlines() if l.strip())} \
+                if p.exists() else {}
+        common = sorted(set(recs["splitalign"]) & set(recs["baseline"]))
+        gold = guard.gold_path(split, lang)
+        gold_ids = [it["id"] for it in load_gold_items(split, lang)]
+        entry = {"n_matched": len(common),
+                 "n_split": len(gold_ids),
+                 "coverage_of_split": round(len(common) / max(len(gold_ids), 1), 4),
+                 "matched_ids": common}
+        for mode in ("splitalign", "baseline"):
+            r = evaluate_predictions(
+                [recs[mode][i] for i in common], gold, lang, n_resamples)
+            d = _dump_eval(r)
+            entry[mode] = d
+            if d["spearman"] is not None:
+                macros[mode].append(d["spearman"])
+        per_lang[lang] = entry
+
+    def _macro(v):
+        # strict: null unless every required lang produced a finite value
+        return (sum(v) / len(v)) if len(v) == len(langs) else None
+    return {
+        "note": ("methods compared only on identical produced IDs; "
+                 "macro is null unless ALL required languages are matched "
+                 "and finite"),
+        "per_language": per_lang,
+        "macro_matched": {
+            "splitalign": _macro(macros["splitalign"]),
+            "baseline": _macro(macros["baseline"]),
+        },
+    }
+
+
+def _dump_eval(r):
+    return _dump(r)
+
+
 def cmd_pipeline(args) -> int:
     """predict (splitalign + baseline) -> evaluate -> export viewer evidence."""
     split = guard.normalize_split(args.split)
     if split == "dev":
         raise SystemExit("specify --split train or val")
+    # ONE shared budget + ONE immutable run scope across BOTH methods — a
+    # second method can never reset the cap or mix with stale artifacts.
+    if args.backend == "apertus":
+        args._budget = ApiBudget(max_requests=args.max_requests,
+                                 max_tokens=args.max_tokens)
+    args._run_dir = _new_run_dir()
     for mode in ("splitalign", "baseline"):
-        ns = argparse.Namespace(**vars(args))
-        _predict(ns, mode)
-        res = evaluate_split(PRED_DIR, split,
+        _predict(args, mode)
+        res = evaluate_split(args._run_dir, split,
                              langs=_langs(args.lang),
                              n_resamples=args.bootstrap,
                              prefix=f"{mode}_{args.backend}",
                              require_full_coverage=args.require_full)
-        (RESULTS_DIR / f"eval_{mode}_{args.backend}_{split.replace('/', '_')}.json"
+        (args._run_dir / f"eval_{mode}_{args.backend}_{split.replace('/', '_')}.json"
          ).write_text(json.dumps(res, indent=2))
         _m = res['macro_spearman']
         print(f"[{mode}] macro Spearman: "
@@ -324,6 +432,11 @@ def cmd_pipeline(args) -> int:
         ns2 = argparse.Namespace(**vars(args))
         ns2.mode = mode
         cmd_export_viewer(ns2)
+    matched = _matched_eval(args._run_dir, split, _langs(args.lang),
+                            args.backend, args.bootstrap)
+    mp = args._run_dir / f"eval_matched_{args.backend}_{split.replace('/', '_')}.json"
+    mp.write_text(json.dumps(matched, indent=2))
+    print(f"matched-ID comparison -> {mp}")
     return 0
 
 
@@ -389,6 +502,8 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("export-viewer")
     p.add_argument("--split", default="val")
+    p.add_argument("--run", default=None,
+                   help="run dir to export from (default: newest run scope)")
     p.add_argument("--backend", default=None, choices=["mock", "apertus"],
                    help="see predict --backend")
     p.add_argument("--mode", default="splitalign")

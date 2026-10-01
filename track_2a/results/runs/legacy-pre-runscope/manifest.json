@@ -1,0 +1,5 @@
+{
+  "run_id": "legacy-pre-runscope",
+  "note": "HISTORICAL artifacts from runs predating run-scoped output (committed pre-b83b1e8). Mixed provenance: several bounded runs, some capped/partial, pre-attempt-boundary budget accounting and some pre-provenance-fix call records. Retained for audit; do NOT treat as a coherent single run. Current results live in sibling timestamped run dirs.",
+  "modes": {}
+}
