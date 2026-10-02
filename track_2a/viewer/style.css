@@ -53,3 +53,14 @@ main { padding: 14px 20px; max-width: 1400px; margin: 0 auto; }
   header { position: static; }
   nav { gap: 8px; }
 }
+
+.runstatus { font-size: .85rem; padding: .4rem .75rem; border-left: 4px solid #888; background: #f4f4f4; margin: .25rem 0 .5rem; white-space: pre-wrap; }
+.runstatus.partial { border-left-color: #c62828; background: #fdecea; }
+
+.errstate {
+  display: block;
+  padding: .5rem .75rem;
+  color: #8a1c1c;
+  background: #fdecea;
+  border-left: 4px solid #c62828;
+}

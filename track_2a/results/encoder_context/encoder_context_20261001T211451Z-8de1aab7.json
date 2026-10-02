@@ -1,0 +1,357 @@
+{
+ "generated_utc": "2026-10-01T22:22:00Z",
+ "run_id": "20261001T211451Z-8de1aab7",
+ "split": "dev/val",
+ "mode": "splitalign",
+ "ids": {
+  "de": [
+   "admin_de_17",
+   "admin_de_18",
+   "admin_de_20",
+   "admin_de_25",
+   "admin_de_41",
+   "admin_de_43",
+   "admin_de_49",
+   "admin_de_53",
+   "admin_de_58",
+   "admin_de_68"
+  ],
+  "fr": [
+   "admin_fr_17",
+   "admin_fr_18",
+   "admin_fr_20",
+   "admin_fr_25",
+   "admin_fr_41",
+   "admin_fr_43",
+   "admin_fr_49",
+   "admin_fr_53",
+   "admin_fr_58",
+   "admin_fr_68"
+  ],
+  "it": [
+   "admin_it_17",
+   "admin_it_18",
+   "admin_it_20",
+   "admin_it_25",
+   "admin_it_41",
+   "admin_it_43",
+   "admin_it_49",
+   "admin_it_53",
+   "admin_it_58",
+   "admin_it_68"
+  ]
+ },
+ "n_docs": 30,
+ "upstream_commit": "1807a42100e742ed03d337c54c4b9ea86995f565",
+ "upstream_dir": "data/evaluation/encoder_predictions/dev",
+ "comparator_policy": "preregistered reference EuroBERT-210m; four SELECTED mmBERT-base DiffAlign variants as comparison context (not exhaustive: upstream publishes more); set fixed before any score was seen and reported unchanged",
+ "metric": "official token-level Spearman convention via splitalign.evaluate._correlate on identical IDs/gold; strict macro = mean over de/fr/it, null if any undefined",
+ "paired_bootstrap": {
+  "method": "document-level paired resampling within language, strict-macro difference (ours - comparator), B=2000, seed=0"
+ },
+ "systems": {
+  "splitalign run 20261001T211451Z-8de1aab7": {
+   "per_language": {
+    "de": {
+     "spearman": 0.2543,
+     "spearman_lo": 0.2264,
+     "spearman_hi": 0.2816,
+     "kendall": 0.2305,
+     "n_docs": 10,
+     "n_tokens": 5757
+    },
+    "fr": {
+     "spearman": 0.2666,
+     "spearman_lo": 0.2422,
+     "spearman_hi": 0.2895,
+     "kendall": 0.2388,
+     "n_docs": 10,
+     "n_tokens": 6504
+    },
+    "it": {
+     "spearman": 0.224,
+     "spearman_lo": 0.2,
+     "spearman_hi": 0.2469,
+     "kendall": 0.1987,
+     "n_docs": 10,
+     "n_tokens": 6219
+    }
+   },
+   "strict_macro": 0.2483
+  },
+  "EuroBERT_EuroBERT-210m": {
+   "per_language": {
+    "de": {
+     "spearman": 0.0548,
+     "spearman_lo": 0.0287,
+     "spearman_hi": 0.0804,
+     "kendall": 0.0438,
+     "n_docs": 10,
+     "n_tokens": 5757
+    },
+    "fr": {
+     "spearman": 0.1958,
+     "spearman_lo": 0.1726,
+     "spearman_hi": 0.219,
+     "kendall": 0.1572,
+     "n_docs": 10,
+     "n_tokens": 6504
+    },
+    "it": {
+     "spearman": 0.1981,
+     "spearman_lo": 0.1766,
+     "spearman_hi": 0.2201,
+     "kendall": 0.1573,
+     "n_docs": 10,
+     "n_tokens": 6219
+    }
+   },
+   "strict_macro": 0.1496
+  },
+  ".._ModernSimCSE_results_mmBERT-base-parallel_en-de": {
+   "per_language": {
+    "de": {
+     "spearman": 0.18,
+     "spearman_lo": 0.1545,
+     "spearman_hi": 0.2061,
+     "kendall": 0.1442,
+     "n_docs": 10,
+     "n_tokens": 5757
+    },
+    "fr": {
+     "spearman": 0.2295,
+     "spearman_lo": 0.2068,
+     "spearman_hi": 0.2519,
+     "kendall": 0.1848,
+     "n_docs": 10,
+     "n_tokens": 6504
+    },
+    "it": {
+     "spearman": 0.2663,
+     "spearman_lo": 0.2447,
+     "spearman_hi": 0.2891,
+     "kendall": 0.2118,
+     "n_docs": 10,
+     "n_tokens": 6219
+    }
+   },
+   "strict_macro": 0.2253
+  },
+  ".._ModernSimCSE_results_mmBERT-base-parallel_en-sw": {
+   "per_language": {
+    "de": {
+     "spearman": 0.1703,
+     "spearman_lo": 0.1451,
+     "spearman_hi": 0.1955,
+     "kendall": 0.1363,
+     "n_docs": 10,
+     "n_tokens": 5757
+    },
+    "fr": {
+     "spearman": 0.2277,
+     "spearman_lo": 0.2053,
+     "spearman_hi": 0.2497,
+     "kendall": 0.1832,
+     "n_docs": 10,
+     "n_tokens": 6504
+    },
+    "it": {
+     "spearman": 0.2706,
+     "spearman_lo": 0.2496,
+     "spearman_hi": 0.292,
+     "kendall": 0.2152,
+     "n_docs": 10,
+     "n_tokens": 6219
+    }
+   },
+   "strict_macro": 0.2229
+  },
+  ".._ModernSimCSE_results_mmBERT-base-parallel_en-de-fr-it": {
+   "per_language": {
+    "de": {
+     "spearman": 0.1986,
+     "spearman_lo": 0.1734,
+     "spearman_hi": 0.2228,
+     "kendall": 0.1586,
+     "n_docs": 10,
+     "n_tokens": 5757
+    },
+    "fr": {
+     "spearman": 0.2433,
+     "spearman_lo": 0.2214,
+     "spearman_hi": 0.2644,
+     "kendall": 0.1958,
+     "n_docs": 10,
+     "n_tokens": 6504
+    },
+    "it": {
+     "spearman": 0.316,
+     "spearman_lo": 0.2949,
+     "spearman_hi": 0.3375,
+     "kendall": 0.2503,
+     "n_docs": 10,
+     "n_tokens": 6219
+    }
+   },
+   "strict_macro": 0.2526
+  },
+  ".._ModernSimCSE_results_mmBERT-base-parallel_all_1epoch": {
+   "per_language": {
+    "de": {
+     "spearman": 0.2063,
+     "spearman_lo": 0.1806,
+     "spearman_hi": 0.2319,
+     "kendall": 0.1644,
+     "n_docs": 10,
+     "n_tokens": 5757
+    },
+    "fr": {
+     "spearman": 0.2429,
+     "spearman_lo": 0.2205,
+     "spearman_hi": 0.2652,
+     "kendall": 0.1956,
+     "n_docs": 10,
+     "n_tokens": 6504
+    },
+    "it": {
+     "spearman": 0.2986,
+     "spearman_lo": 0.2775,
+     "spearman_hi": 0.3206,
+     "kendall": 0.2369,
+     "n_docs": 10,
+     "n_tokens": 6219
+    }
+   },
+   "strict_macro": 0.2493
+  }
+ },
+ "paired_vs_run": {
+  "EuroBERT_EuroBERT-210m": {
+   "diff_strict_macro": 0.0987,
+   "ci95": [
+    -0.0082,
+    0.1839
+   ],
+   "p_diff_le_0": 0.033,
+   "includes_zero": true
+  },
+  ".._ModernSimCSE_results_mmBERT-base-parallel_en-de": {
+   "diff_strict_macro": 0.023,
+   "ci95": [
+    -0.0728,
+    0.1016
+   ],
+   "p_diff_le_0": 0.325,
+   "includes_zero": true
+  },
+  ".._ModernSimCSE_results_mmBERT-base-parallel_en-sw": {
+   "diff_strict_macro": 0.0254,
+   "ci95": [
+    -0.0698,
+    0.1044
+   ],
+   "p_diff_le_0": 0.311,
+   "includes_zero": true
+  },
+  ".._ModernSimCSE_results_mmBERT-base-parallel_en-de-fr-it": {
+   "diff_strict_macro": -0.0043,
+   "ci95": [
+    -0.1026,
+    0.0771
+   ],
+   "p_diff_le_0": 0.563,
+   "includes_zero": true
+  },
+  ".._ModernSimCSE_results_mmBERT-base-parallel_all_1epoch": {
+   "diff_strict_macro": -0.0009,
+   "ci95": [
+    -0.0948,
+    0.0842
+   ],
+   "p_diff_le_0": 0.524,
+   "includes_zero": true
+  }
+ },
+ "sources": {
+  "DiffAlign(model=EuroBERT_EuroBERT-210m, layer=-1_admin_de.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3DEuroBERT_EuroBERT-210m%2C%20layer%3D-1_admin_de.jsonl.jsonl",
+   "sha256": "5b8cde18cdb791295a8c3d2b385ae8edefcbe240d6590192f3aef1af566f59d8",
+   "bytes": 1939467
+  },
+  "DiffAlign(model=EuroBERT_EuroBERT-210m, layer=-1_admin_fr.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3DEuroBERT_EuroBERT-210m%2C%20layer%3D-1_admin_fr.jsonl.jsonl",
+   "sha256": "5d416f50d6851dc5ddb0df26ade1c04e46b8d7e5d23bd636a2ad075d31cd9810",
+   "bytes": 2138814
+  },
+  "DiffAlign(model=EuroBERT_EuroBERT-210m, layer=-1_admin_it.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3DEuroBERT_EuroBERT-210m%2C%20layer%3D-1_admin_it.jsonl.jsonl",
+   "sha256": "9cb33e5dd83c19049933ec79b41ea04c181f23357bf67229641f558b8206b8cf",
+   "bytes": 2050393
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-de, layer=-1_admin_de.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-de%2C%20layer%3D-1_admin_de.jsonl.jsonl",
+   "sha256": "8883745152c57ec419d7333870db6a0be54b4587179517b7317db9fbb5caa7df",
+   "bytes": 1938306
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-de, layer=-1_admin_fr.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-de%2C%20layer%3D-1_admin_fr.jsonl.jsonl",
+   "sha256": "1af8746c02913dced54137d949038f93f99af47bd642f113a25aaeccf1bddabd",
+   "bytes": 2137532
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-de, layer=-1_admin_it.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-de%2C%20layer%3D-1_admin_it.jsonl.jsonl",
+   "sha256": "86cb36a7495493350bb97dceb9820040c264e2079a75985ed648f91265fedd2a",
+   "bytes": 2049108
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-sw, layer=-1_admin_de.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-sw%2C%20layer%3D-1_admin_de.jsonl.jsonl",
+   "sha256": "7d2dd86b8107b620f50e64fba671a53a6c0285f49d81374078328bf27b776a4d",
+   "bytes": 1938721
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-sw, layer=-1_admin_fr.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-sw%2C%20layer%3D-1_admin_fr.jsonl.jsonl",
+   "sha256": "2bb28ccf23fea6706a62086c492a509a1e538a637fb15ca426b193633ca4a304",
+   "bytes": 2138007
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-sw, layer=-1_admin_it.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-sw%2C%20layer%3D-1_admin_it.jsonl.jsonl",
+   "sha256": "1bdcd84b873457720b53be7b01b463745bf6c9a2af2ade502a88417f309ee5f6",
+   "bytes": 2049989
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-de-fr-it, layer=-1_admin_de.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-de-fr-it%2C%20layer%3D-1_admin_de.jsonl.jsonl",
+   "sha256": "87439bc71e436dccd3ad266dca5aaeef01ca8d6eb5018530e89cb7c150d517e1",
+   "bytes": 1939194
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-de-fr-it, layer=-1_admin_fr.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-de-fr-it%2C%20layer%3D-1_admin_fr.jsonl.jsonl",
+   "sha256": "fa2f570d335b161ecac2fb41972b144b4a087ffaae66e25b6005edd4507c136c",
+   "bytes": 2138662
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_en-de-fr-it, layer=-1_admin_it.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_en-de-fr-it%2C%20layer%3D-1_admin_it.jsonl.jsonl",
+   "sha256": "82117e08a9706024ec95b45a337af43e6dbf0158a4767058bcaa27ad5ee6c8bc",
+   "bytes": 2049952
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_all_1epoch, layer=-1_admin_de.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_all_1epoch%2C%20layer%3D-1_admin_de.jsonl.jsonl",
+   "sha256": "e57dd6c43b7e90146b867f6806c9c4d147519c675475da1e8d0fef3e4584afb6",
+   "bytes": 1938663
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_all_1epoch, layer=-1_admin_fr.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_all_1epoch%2C%20layer%3D-1_admin_fr.jsonl.jsonl",
+   "sha256": "8976393f731e4e4aa935b5140aaff30f96656f28b9ee4611b574af090660afc2",
+   "bytes": 2138140
+  },
+  "DiffAlign(model=.._ModernSimCSE_results_mmBERT-base-parallel_all_1epoch, layer=-1_admin_it.jsonl.jsonl": {
+   "url": "https://raw.githubusercontent.com/ZurichNLP/SwissGov-RSD/1807a42100e742ed03d337c54c4b9ea86995f565/data/evaluation/encoder_predictions/dev/DiffAlign%28model%3D.._ModernSimCSE_results_mmBERT-base-parallel_all_1epoch%2C%20layer%3D-1_admin_it.jsonl.jsonl",
+   "sha256": "f6674752289e4cc5096ddf79c57ce29605fc7af000cc4bebcc7d42fd84876f7f",
+   "bytes": 2049962
+  }
+ },
+ "caveats": [
+  "same-ID subset of dev/val only; NOT comparable to whole-dev numbers (168 docs/lang) and NOT a held-out result",
+  "published encoder outputs are the authors' precomputed dev predictions; they were not rerun here",
+  "no matched whole-document Apertus baseline exists for these IDs; none is invented"
+ ]
+}

@@ -44,7 +44,8 @@ track_2a/
   tests/             # pytest: firewall, segmentation, DP, scoring, parity
   viewer/            # static bilingual evidence viewer (evidence.js generated)
   docs/              # licenses + report assets
-  results/           # committed predictions, evals, redacted call log
+  results/           # committed predictions, evals; runs/<id>/calls.jsonl = run-scoped
+                     # redacted call log (calls.jsonl at this level = historical, unscoped)
                      # (only results/cache/ is gitignored)
 ```
 
@@ -55,8 +56,9 @@ python -m splitalign.run fetch-data        # verify allowlisted dev data
 python -m splitalign.run predict  --split val --lang de --limit 5 --backend mock
 python -m splitalign.run baseline --split val --lang de --limit 5 --backend mock
 python -m splitalign.run evaluate --pred results/predictions --split val --prefix splitalign_mock
-python -m splitalign.run calibrate --lang all          # grid on dev/train
-python -m splitalign.run export-viewer --split val     # -> viewer/evidence.js
+python -m splitalign.run calibrate --lang all          # grid on dev/train (mock backend only;
+                                                       # fails closed for apertus — no shared budget)
+python -m splitalign.run export-viewer --split val --run results/runs/<run-id>  # explicit scope -> viewer/evidence.js
 ```
 
 ## Data

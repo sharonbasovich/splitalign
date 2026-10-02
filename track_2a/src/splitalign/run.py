@@ -13,6 +13,8 @@ Splits are firewall-enforced: only dev/train and dev/val exist here.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import subprocess
 import itertools
 import json
 import os
@@ -20,6 +22,7 @@ import shutil
 import sys
 import time
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 
 from . import PROMPT_VERSION, __version__, guard
@@ -31,7 +34,7 @@ from .fetch_data import ALLOWLIST, fetch, load_gold_items, write_manifest
 from .pipeline import (make_judge, predict_baseline_item, predict_item,
                        provenance)
 from .score import ScoreConfig
-from .viewer_export import export_evidence
+from .viewer_export import export_evidence, inference_provenance
 
 TRACK_DIR = guard.TRACK_DIR
 # SPLITALIGN_OUT redirects every produced artifact (results + viewer) — the
@@ -90,8 +93,45 @@ def _new_run_dir() -> Path:
     return d
 
 
+def _source_info() -> dict:
+    """Exact source state of THIS process — recorded, never inferred later.
+
+    Falls back to SPLITALIGN_SOURCE_COMMIT / SPLITALIGN_SOURCE_DIRTY (passed
+    into the Docker container by the Makefile) and reports null when neither
+    git nor the env vars are available.
+    """
+    info = {"commit": None, "dirty": None, "note": None}
+    try:
+        root = TRACK_DIR.parent
+        head = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"],
+                              capture_output=True, text=True, timeout=10)
+        if head.returncode == 0:
+            info["commit"] = head.stdout.strip()
+            st = subprocess.run(["git", "-C", str(root), "status",
+                                 "--porcelain", "--untracked-files=no"],
+                                capture_output=True, text=True, timeout=10)
+            info["dirty"] = bool(st.stdout.strip()) if st.returncode == 0 else None
+    except (OSError, subprocess.SubprocessError):
+        pass
+    if info["commit"] is None and os.environ.get("SPLITALIGN_SOURCE_COMMIT"):
+        info["commit"] = os.environ["SPLITALIGN_SOURCE_COMMIT"]
+        dirty = os.environ.get("SPLITALIGN_SOURCE_DIRTY")
+        info["dirty"] = {"0": False, "1": True}.get(dirty)
+        info["note"] = ("commit/dirty from SPLITALIGN_SOURCE_* env (host checkout)"
+                        if info["dirty"] is not None else
+                        "commit from SPLITALIGN_SOURCE_COMMIT env; dirty state unknown")
+    elif info["commit"] is None:
+        info["note"] = "git metadata unavailable (not a git checkout)"
+    return info
+
+
+def _gold_sha256(split: str, langs) -> dict:
+    return {l: hashlib.sha256(guard.gold_path(split, l).read_bytes()).hexdigest()
+            for l in langs}
+
+
 def _write_manifest(run_dir: Path, mode: str, planned_ids: dict,
-                    backend: str, split: str) -> None:
+                    backend: str, split: str, meta: dict | None = None) -> None:
     """Intended-ID manifest, updated as each mode declares its plan."""
     man_path = run_dir / "manifest.json"
     man = json.loads(man_path.read_text()) if man_path.exists() else {
@@ -104,6 +144,9 @@ def _write_manifest(run_dir: Path, mode: str, planned_ids: dict,
                  "only on identical produced IDs; a mode missing from "
                  "'modes' never ran in this scope"),
     }
+    if meta:
+        for k, v in meta.items():
+            man.setdefault(k, v)
     man["modes"][mode] = {"intended_ids": planned_ids,
                           "n_intended": sum(len(v) for v in planned_ids.values())}
     man_path.write_text(json.dumps(man, indent=2))
@@ -134,30 +177,48 @@ def _predict(args, mode: str) -> int:
         args._budget = budget
     all_details = []
     capped = None
-    completed_ids: dict[str, list[str]] = {}
+    langs = _langs(args.lang)
+    # state for EVERY planned language exists before inference starts, so a
+    # cap hit in an early language still yields truthful completed/remaining
+    completed_ids: dict[str, list[str]] = {l: [] for l in langs}
+    started: set[str] = set()
     run_dir = getattr(args, "_run_dir", None)
     if run_dir is None:
         run_dir = _new_run_dir()
         args._run_dir = run_dir
     planned_ids = {l: [it["id"] for it in _items(split, l, args.limit,
                                                   args.offset)]
-                   for l in _langs(args.lang)}
-    _write_manifest(run_dir, mode, planned_ids, args.backend, split)
+                   for l in langs}
+    score_cfg = _load_score_cfg(args)
+    _write_manifest(run_dir, mode, planned_ids, args.backend, split, meta={
+        "source": _source_info(),
+        "splitalign_version": __version__,
+        "prompt_version": PROMPT_VERSION,
+        "gold_sha256": _gold_sha256(split, langs),
+        "score_config": asdict(score_cfg),
+        "cli": {k: getattr(args, k, None) for k in
+                ("limit", "offset", "seed", "max_requests", "max_tokens",
+                 "cfg", "bootstrap", "require_full")},
+    })
     t0 = time.monotonic()
+    recs: list = []
+    lang: str | None = None
     try:
-        for lang in _langs(args.lang):
+        for lang in langs:
             recs = []
             wanted = _items(split, lang, args.limit, args.offset)
-            completed_ids[lang] = []
+            started.add(lang)
             for item in wanted:
                 judge, backend = make_judge(args.backend, RESULTS_DIR, split,
-                                            item["id"], seed, budget=budget)
+                                            item["id"], seed, budget=budget,
+                                            run_id=run_dir.name,
+                                            log_path=run_dir / "calls.jsonl")
                 try:
                     if mode == "baseline":
                         out = predict_baseline_item(item, judge)
                     else:
-                        out = predict_item(item, judge,
-                                           score_cfg=_load_score_cfg(args))
+                        out = predict_item(item, judge, score_cfg=score_cfg,
+                                           lang=lang)
                 except ApertusUnavailable as e:
                     # truthful per-item failure: no prediction, run continues
                     det = {"id": item["id"], "lang": lang, "failed": True,
@@ -191,7 +252,7 @@ def _predict(args, mode: str) -> int:
         # hard cap hit mid-item: keep every completed record, report honestly
         capped = str(e)
         print(f"BUDGET CAP: {capped} — writing partial results", file=sys.stderr)
-        if recs:  # `lang`/`recs` remain bound from the interrupted iteration
+        if recs and lang is not None:  # bound from the interrupted iteration
             path = _pred_path(run_dir, backend, mode, lang)
             with path.open("w") as f:
                 for r in recs:
@@ -203,11 +264,18 @@ def _predict(args, mode: str) -> int:
     print(f"details -> {det_path}")
     # run summary: completed ids, coverage, usage, remainder — never hide a cap
     elapsed = time.monotonic() - t0
+    def _status(l: str) -> str:
+        if len(completed_ids[l]) == len(planned_ids[l]):
+            return "complete"
+        if completed_ids[l]:
+            return "partial"
+        return "started_no_output" if l in started else "not_started"
     summary = {
         "mode": mode, "backend": backend, "split": split,
         "completed_ids": completed_ids,
         "remaining_ids": {k: [i for i in v if i not in set(completed_ids[k])]
                           for k, v in planned_ids.items()},
+        "lang_status": {l: _status(l) for l in langs},
         "n_planned": sum(len(v) for v in planned_ids.values()),
         "n_completed": sum(len(v) for v in completed_ids.values()),
         "budget_capped": capped,
@@ -256,8 +324,18 @@ def _load_score_cfg(args) -> ScoreConfig:
 def cmd_calibrate(args) -> int:
     """Grid-search score/align params on dev/train, evaluate on dev/val."""
     split_train, split_val = "dev/train", "dev/val"
+    if args.backend != "mock":
+        # Fail closed BEFORE any client/network work: calibrate creates its
+        # judges without the shared ApiBudget, so --max-requests/--max-tokens
+        # would not bound a real backend. Bounded real calibration is
+        # unsupported until a reviewed shared-budget implementation exists.
+        raise SystemExit(
+            "calibrate supports --backend mock only: the grid search does not "
+            "run under the shared request/token budget, so a real backend "
+            "cannot be bounded. No request was attempted.")
     langs = _langs(args.lang)
     limit = args.limit
+    cal_run_id = f"calibrate-{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}"
 
     # run predictions ONCE per config on train, pick best, then val.
     grids = {
@@ -274,8 +352,10 @@ def cmd_calibrate(args) -> int:
             recs = []
             for item in _items(split_train, lang, limit):
                 judge, backend = make_judge(args.backend, RESULTS_DIR,
-                                            split_train, item["id"], args.seed)
-                recs.append(predict_item(item, judge, score_cfg=cfg)["record"])
+                                            split_train, item["id"], args.seed,
+                                            run_id=cal_run_id)
+                recs.append(predict_item(item, judge, score_cfg=cfg,
+                                         lang=lang)["record"])
             gold = guard.gold_path(split_train, lang)
             r = evaluate_predictions(recs, gold, lang, n_resamples=0)
             spear_sum += r.spearman
@@ -291,45 +371,148 @@ def cmd_calibrate(args) -> int:
     return 0
 
 
+def _load_strict_json(path: Path) -> dict:
+    """Reject NaN/Infinity so a non-strict artifact can never be published."""
+    def _bad(c):
+        raise SystemExit(f"{path}: non-strict JSON constant {c}; regenerate "
+                         "this artifact with current code")
+    return json.loads(path.read_text(), parse_constant=_bad)
+
+
+def _resolve_run_dir(args) -> Path:
+    """Explicit run scope only — never promote the newest directory."""
+    run_dir = getattr(args, "_run_dir", None)
+    if run_dir is None:
+        run = getattr(args, "run", None)
+        if not run:
+            runs_root = RESULTS_DIR / "runs"
+            avail = sorted(d.name for d in runs_root.iterdir()
+                           if d.is_dir()) if runs_root.exists() else []
+            raise SystemExit(
+                "export-viewer requires --run <run id or dir>; the newest run "
+                "is never promoted implicitly (it may be capped or partial). "
+                f"Available: {avail or 'none'}")
+        run_dir = Path(run)
+        if not run_dir.exists() and (RESULTS_DIR / "runs" / run).exists():
+            run_dir = RESULTS_DIR / "runs" / run
+    run_dir = Path(run_dir)
+    if not (run_dir / "manifest.json").exists():
+        raise SystemExit(f"{run_dir} is not a run scope (no manifest.json)")
+    return run_dir
+
+
+def _run_info(run_dir: Path, split: str, backend: str, tag: str,
+              produced_modes) -> dict:
+    """Identity + coverage of a run scope, read from its own artifacts only."""
+    man = _load_strict_json(run_dir / "manifest.json")
+    langs = sorted({l for m in man["modes"].values()
+                    for l in m["intended_ids"]})
+    n_split = {l: len(load_gold_items(split, l)) for l in langs}
+    modes = {}
+    for mode, m in man["modes"].items():
+        sp = run_dir / f"run_summary_{mode}_{backend}_{tag}.json"
+        summ = _load_strict_json(sp) if sp.exists() else None
+        entry = {
+            "intended": {l: len(v) for l, v in m["intended_ids"].items()},
+            "n_intended": m["n_intended"],
+            "produced": mode in produced_modes,
+            "summary_present": summ is not None,
+        }
+        if summ:
+            entry.update({
+                "completed": {l: len(v) for l, v in summ["completed_ids"].items()},
+                "n_completed": summ["n_completed"],
+                "lang_status": summ.get("lang_status"),
+                "budget_capped": summ.get("budget_capped"),
+                "caution": summ.get("caution"),
+                "new_api_requests": summ.get("new_api_requests"),
+                "new_api_tokens": summ.get("new_api_tokens"),
+            })
+        else:
+            entry["caution"] = ("intended in manifest but no run summary — "
+                                "this mode did not finish in this scope")
+        entry["coverage_of_split"] = {
+            l: round(len(summ["completed_ids"].get(l, [])) / max(n_split[l], 1), 4)
+            if summ else 0.0 for l in langs}
+        modes[mode] = entry
+    mp = run_dir / f"eval_matched_{backend}_{tag}.json"
+    matched = None
+    if mp.exists():
+        mj = _load_strict_json(mp)
+        matched = {"n_matched": {l: v["n_matched"] for l, v in
+                                 mj["per_language"].items()},
+                   "macro_matched": mj.get("macro_matched")}
+    produced = sorted(produced_modes)
+    not_produced = sorted(set(man["modes"]) - set(produced))
+    scoped_log = (run_dir / "calls.jsonl").exists()
+    partial = any((e.get("budget_capped") or not e["produced"]
+                   or e.get("n_completed", 0) < e["n_intended"])
+                  for e in modes.values())
+    return {
+        "run_id": man["run_id"],
+        "started_utc": man.get("started_utc"),
+        "source": man.get("source"),
+        "prompt_version": man.get("prompt_version"),
+        "known_defects": _known_defects(man.get("prompt_version")),
+        "call_log": ("run-scoped calls.jsonl (every record tagged run_id)"
+                     if scoped_log else
+                     "no run-scoped log: calls were appended to the historical "
+                     "global results/calls.jsonl without a run_id"),
+        "n_split": n_split,
+        "modes": modes,
+        "modes_produced": produced,
+        "modes_intended_not_produced": not_produced,
+        "matched": matched,
+        "partial": partial,
+        "comparison_note": (
+            "methods are comparable ONLY on matched IDs (see matched); "
+            "an intended mode that produced nothing yields no comparison"
+            if not_produced or not matched else
+            "matched-ID comparison available for the produced modes"),
+    }
+
+
+def _known_defects(prompt_version: str | None) -> list[str]:
+    """Configuration defects of recorded prompt versions, stated as facts
+    about the historical run — never corrected retroactively."""
+    if prompt_version in (None, "splitalign-prompts-v1"):
+        return [
+            "judge prompt language: under prompt v1 (and earlier unrecorded "
+            "versions) predict_item used its default lang='de', so every "
+            "fr/it pair was judged with a prompt naming German as the target "
+            "language. Outputs are real but belong to this defective "
+            "configuration, not to the intended multilingual one. Fixed in "
+            "splitalign-prompts-v2-lang (language required, recorded per "
+            "judgment)."]
+    return []
+
+
 def cmd_export_viewer(args) -> int:
     split = guard.normalize_split(args.split)
     tag = split.replace("/", "_")
+    run_dir = _resolve_run_dir(args)
+    det_paths = sorted(run_dir.glob(f"details_*_{args.backend}_{tag}.json"))
+    if not det_paths:
+        raise SystemExit(f"no details for backend '{args.backend}' / {split} "
+                         f"in run scope {run_dir}")
     items_by_mode: dict[str, list] = {}
     evals: dict = {}
-    # locate the run scope: explicit --run > current run > newest run dir
-    run_dir = getattr(args, "_run_dir", None) or (
-        Path(args.run) if getattr(args, "run", None) else None)
-    det_paths: list[Path] = []
-    det_dir: Path | None = None
-    search = [run_dir] if run_dir else (
-        sorted((RESULTS_DIR / "runs").iterdir(), reverse=True)
-        if (RESULTS_DIR / "runs").exists() else [])
-    for d in search:
-        det_paths = sorted(d.glob(f"details_*_{args.backend}_{tag}.json"))
-        if det_paths:
-            det_dir = d
-            break
-    if not det_paths:  # legacy flat layout (historical artifacts)
-        det_dir = DETAIL_DIR
-        det_paths = sorted(DETAIL_DIR.glob(f"*_{args.backend}_{tag}.json"))
     for det_path in det_paths:
         mode = det_path.name.split(f"_{args.backend}_{tag}")[0] \
             .removeprefix("details_")
-        items_by_mode[mode] = json.loads(det_path.read_text())
-        for base in (det_dir, RESULTS_DIR):
-            ep = base / f"eval_{mode}_{args.backend}_{tag}.json"
-            if ep.exists():
-                evals[mode] = json.loads(ep.read_text())
-                break
-    if not items_by_mode:
-        raise SystemExit("no details found; run predict first")
-    # actual executed model, from recorded provenance (never assumed)
-    model = next((it["provenance"].get("model")
-                  for d in items_by_mode.values() for it in d
-                  if it.get("provenance", {}).get("model")), None)
+        items_by_mode[mode] = _load_strict_json(det_path)
+        ep = run_dir / f"eval_{mode}_{args.backend}_{tag}.json"
+        if ep.exists():
+            evals[mode] = _load_strict_json(ep)
+    run_info = _run_info(run_dir, split, args.backend, tag, items_by_mode)
+    # prompt/model/package that actually produced the items, from the run
+    # manifest + per-item provenance (never from this exporting process)
+    inference = inference_provenance(
+        items_by_mode, _load_strict_json(run_dir / "manifest.json"))
+    lims = _limitations(args.backend) + run_info["known_defects"]
     out = export_evidence(items_by_mode, EVIDENCE_PATH, backend=args.backend,
-                          model=model, split=split, evaluation=evals,
-                          limitations=_limitations(args.backend))
+                          inference=inference, split=split, evaluation=evals,
+                          limitations=lims, run=run_info)
     # keep the viewer self-contained wherever OUT_DIR points
     for name in ("index.html", "style.css", "app.js"):
         src = TRACK_DIR / "viewer" / name
@@ -337,7 +520,8 @@ def cmd_export_viewer(args) -> int:
         if src.resolve() != dst.resolve():
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src, dst)
-    print(f"evidence -> {out}")
+    print(f"evidence -> {out} (run {run_info['run_id']}"
+          f"{', PARTIAL' if run_info['partial'] else ''})")
     return 0
 
 
@@ -429,14 +613,13 @@ def cmd_pipeline(args) -> int:
         _m = res['macro_spearman']
         print(f"[{mode}] macro Spearman: "
               + (f"{_m:.4f}" if _m is not None else "null (undefined)"))
-        ns2 = argparse.Namespace(**vars(args))
-        ns2.mode = mode
-        cmd_export_viewer(ns2)
     matched = _matched_eval(args._run_dir, split, _langs(args.lang),
                             args.backend, args.bootstrap)
     mp = args._run_dir / f"eval_matched_{args.backend}_{split.replace('/', '_')}.json"
     mp.write_text(json.dumps(matched, indent=2))
     print(f"matched-ID comparison -> {mp}")
+    # export once, after both modes + matched eval exist in this scope
+    cmd_export_viewer(args)
     return 0
 
 
@@ -445,8 +628,9 @@ def cmd_selftest(args) -> int:
     import tempfile
     items = load_gold_items("dev/val", "de")[:1]
     with tempfile.TemporaryDirectory() as td:
-        judge, backend = make_judge("mock", Path(td), "dev/val", items[0]["id"], 0)
-        out = predict_item(items[0], judge)
+        judge, backend = make_judge("mock", Path(td), "dev/val", items[0]["id"], 0,
+                                    run_id="selftest")
+        out = predict_item(items[0], judge, lang="de")
         gold = guard.gold_path("dev/val", "de")
         r = evaluate_predictions([out["record"]], gold, "de", n_resamples=0)
         print(f"selftest ok: 1 item, spearman {r.spearman:.3f}, "

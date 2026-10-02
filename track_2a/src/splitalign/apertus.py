@@ -63,10 +63,15 @@ class ChatResult:
 
 
 class CallLogger:
-    """Append-only JSONL log of every model call (split-tagged)."""
+    """Append-only JSONL log of every model call (split- and run-tagged).
 
-    def __init__(self, path: Path | None):
+    ``run_id`` is written on every record (cache hits and errors included);
+    records without it predate run scoping and are unattributable to a run.
+    """
+
+    def __init__(self, path: Path | None, run_id: str | None = None):
         self.path = Path(path) if path else None
+        self.run_id = run_id
 
     def log(self, *, split: str, item_id: str, kind: str, messages,
             result: ChatResult | None, ok: bool, error: str | None,
@@ -78,6 +83,7 @@ class CallLogger:
         prompt_text = "\n".join(m.get("content", "") for m in messages)
         rec = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "run_id": self.run_id,
             "split": split, "item_id": item_id, "kind": kind,
             # actual backend/model on EVERY record, incl. cache-hit/error paths
             "backend": (result.backend if result else backend),

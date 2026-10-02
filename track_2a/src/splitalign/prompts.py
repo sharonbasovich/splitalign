@@ -86,8 +86,8 @@ def similarity_request(pairs: list[dict]) -> dict:
     return {"kind": "pair_similarity", "pairs": pairs}
 
 
-def judge_request(a_text: str, b_text: str, lang_a: str = "en",
-                  lang_b: str = "de") -> dict:
+def judge_request(a_text: str, b_text: str, lang_a: str,
+                  lang_b: str) -> dict:
     return {"kind": "judge_pair", "lang_a": lang_a, "lang_b": lang_b,
             "a": a_text, "b": b_text}
 

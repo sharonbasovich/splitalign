@@ -81,16 +81,22 @@ def test_spearman_parity_with_scipy(tmp_path):
     assert res.spearman == pytest.approx(expected, abs=1e-9)
 
 
-def test_bootstrap_zero_omits_ci():
+def test_bootstrap_zero_omits_ci(tmp_path):
     """bootstrap=0 must not emit bounds (never show lo==hi as a fake CI)."""
     from splitalign import guard
     from splitalign.evaluate import evaluate_split
-    pred = TRACK / "results" / "predictions"
-    cand = sorted(pred.glob("splitalign_mock_admin_de.jsonl"))
-    if not cand:
-        pytest.skip("no committed mock predictions")
+    from splitalign.fetch_data import load_gold_items
+    # run-scoped synthetic fixture: gold labels replayed as predictions
+    items = load_gold_items("dev/val", "de")[:3]
+    pred = tmp_path / "run"
+    pred.mkdir()
+    with (pred / "splitalign_mock_admin_de.jsonl").open("w") as f:
+        for it in items:
+            f.write(json.dumps({"id": it["id"], "labels_a": it["labels_a"],
+                                "labels_b": it["labels_b"]}) + "\n")
     res = evaluate_split(pred, "dev/val", langs=("de",), n_resamples=0,
                          prefix="splitalign_mock")
+    assert res["per_language"]["de"]["n_samples"] == 3
     lang = res["per_language"]["de"]
     assert "spearman_lo" not in lang and "spearman_hi" not in lang
 

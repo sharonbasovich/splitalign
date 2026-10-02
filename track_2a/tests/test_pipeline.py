@@ -20,7 +20,7 @@ def _synth_item():
 def test_predict_item_synthetic(tmp_path):
     judge, backend = make_judge("mock", tmp_path, "dev/train", "synthetic_0", 0)
     assert backend == "mock"
-    out = predict_item(_synth_item(), judge)
+    out = predict_item(_synth_item(), judge, lang="de")
     rec = out["record"]
     assert len(rec["labels_a"]) == len(rec["text_a"].split())
     assert len(rec["labels_b"]) == len(rec["text_b"].split())
@@ -32,8 +32,8 @@ def test_predict_deterministic(tmp_path):
     item = _synth_item()
     j1, _ = make_judge("mock", tmp_path / "c1", "dev/train", item["id"], 0)
     j2, _ = make_judge("mock", tmp_path / "c2", "dev/train", item["id"], 0)
-    r1 = predict_item(item, j1)["record"]
-    r2 = predict_item(item, j2)["record"]
+    r1 = predict_item(item, j1, lang="de")["record"]
+    r2 = predict_item(item, j2, lang="de")["record"]
     assert r1["labels_a"] == r2["labels_a"]
     assert r1["labels_b"] == r2["labels_b"]
 
@@ -41,9 +41,9 @@ def test_predict_deterministic(tmp_path):
 def test_cache_hit_second_run(tmp_path):
     item = _synth_item()
     j1, _ = make_judge("mock", tmp_path, "dev/train", item["id"], 0)
-    predict_item(item, j1)
+    predict_item(item, j1, lang="de")
     j2, _ = make_judge("mock", tmp_path, "dev/train", item["id"], 0)
-    out = predict_item(item, j2)
+    out = predict_item(item, j2, lang="de")
     cached_flags = [j["cached"] for j in out["detail"]["judgments"] if j]
     assert cached_flags and all(cached_flags)
 
@@ -58,7 +58,7 @@ def test_baseline_synthetic(tmp_path):
 def test_real_dev_item_mock(tmp_path):
     items = load_gold_items("dev/val", "de")[:1]
     judge, _ = make_judge("mock", tmp_path, "dev/val", items[0]["id"], 0)
-    out = predict_item(items[0], judge)
+    out = predict_item(items[0], judge, lang="de")
     assert len(out["record"]["labels_a"]) == len(items[0]["labels_a"])
     assert len(out["record"]["labels_b"]) == len(items[0]["labels_b"])
 

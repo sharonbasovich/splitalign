@@ -115,3 +115,169 @@ def test_runs_do_not_mix(pipeline_env, monkeypatch):
     preds2 = sorted(p.name for p in rds[1].glob("*_admin_*.jsonl"))
     assert preds1, "first run must have produced files"
     assert set(preds2) <= set(preds1) or preds2 != preds1
+
+
+def _strict(p):
+    return json.loads(p.read_text(),
+                      parse_constant=lambda c: (_ for _ in ()).throw(
+                          AssertionError(f"non-strict JSON {c} in {p}")))
+
+
+def _assert_truthful_scope(rd, modes=("splitalign", "baseline"),
+                           langs=("de", "fr", "it")):
+    """Every planned language has completed+remaining == intended, both
+    modes have summaries, matched eval exists, all JSON strict."""
+    man = _strict(rd / "manifest.json")
+    assert set(man["modes"]) == set(modes)
+    assert man["source"] is not None and "prompt_version" in man
+    assert set(man["gold_sha256"]) == set(langs)
+    for mode in modes:
+        s = _strict(rd / f"run_summary_{mode}_apertus_dev_val.json")
+        intended = man["modes"][mode]["intended_ids"]
+        for l in langs:
+            assert set(s["completed_ids"][l]) | set(s["remaining_ids"][l]) \
+                == set(intended[l]), (mode, l)
+            assert not (set(s["completed_ids"][l]) & set(s["remaining_ids"][l]))
+            assert s["lang_status"][l] in (
+                "complete", "partial", "started_no_output", "not_started")
+            assert (s["lang_status"][l] == "complete") == (
+                len(s["completed_ids"][l]) == len(intended[l]))
+        assert s["n_completed"] == sum(len(v) for v in s["completed_ids"].values())
+        _strict(rd / f"eval_{mode}_apertus_dev_val.json")
+    m = _strict(rd / "eval_matched_apertus_dev_val.json")
+    assert set(m["per_language"]) == set(langs)
+    for p in rd.glob("*.json"):
+        _strict(p)
+    return man, m
+
+
+def test_lang_all_cap_before_first_item(pipeline_env, monkeypatch):
+    """Cap already exhausted (0 requests allowed): nothing runs, yet every
+    language of BOTH methods has truthful not_started state and the
+    matched eval + evidence are still written."""
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: _FakeResp())
+    args = _args(lang="all", max_requests=0)
+    _run.cmd_pipeline(args)
+    rd = next((_run.RESULTS_DIR / "runs").iterdir())
+    man, m = _assert_truthful_scope(rd)
+    for mode in ("splitalign", "baseline"):
+        s = _strict(rd / f"run_summary_{mode}_apertus_dev_val.json")
+        assert s["n_completed"] == 0 and s["budget_capped"]
+        assert s["lang_status"] == {"de": "started_no_output",
+                                    "fr": "not_started", "it": "not_started"}
+        e = _strict(rd / f"eval_{mode}_apertus_dev_val.json")
+        assert e["macro_spearman"] is None and e["macro_spearman_invalid_reason"]
+    assert m["macro_matched"] == {"splitalign": None, "baseline": None}
+    assert args._budget.requests == 0
+    ev = _run.EVIDENCE_PATH.read_text()
+    assert "NaN" not in ev
+    evj = json.loads(ev[ev.index("{"):].rstrip().rstrip(";"))
+    assert evj["run"]["run_id"] == rd.name and evj["run"]["partial"] is True
+    assert evj["run"]["modes"]["baseline"]["budget_capped"]
+
+
+def test_lang_all_cap_mid_first_language(pipeline_env, monkeypatch):
+    """Token cap trips inside de: de partial, fr/it not_started for
+    splitalign; baseline exhausted before its first item; one shared budget."""
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: _FakeResp())
+    probe = _args(lang="de", limit=1, max_requests=10**9)
+    _run._predict(probe, "splitalign")
+    per_item = probe._budget.requests
+    assert per_item > 1
+    # fresh scope: allow a bit more than one de item, less than two
+    for d in (_run.RESULTS_DIR / "runs").iterdir():
+        for f in d.iterdir():
+            f.unlink()
+        d.rmdir()
+    args = _args(lang="all", limit=2, max_requests=per_item + 1)
+    _run.cmd_pipeline(args)
+    rd = next((_run.RESULTS_DIR / "runs").iterdir())
+    _assert_truthful_scope(rd)
+    sa = _strict(rd / "run_summary_splitalign_apertus_dev_val.json")
+    assert sa["lang_status"]["de"] == "partial"
+    assert sa["completed_ids"]["de"] and len(sa["remaining_ids"]["de"]) == 1
+    assert sa["lang_status"]["fr"] == "not_started"
+    assert sa["lang_status"]["it"] == "not_started"
+    assert sum(1 for _ in (rd / "splitalign_apertus_admin_de.jsonl").open()) == 1
+    assert not (rd / "splitalign_apertus_admin_fr.jsonl").exists()
+    bl = _strict(rd / "run_summary_baseline_apertus_dev_val.json")
+    assert bl["budget_capped"] and bl["n_completed"] == 0
+    assert bl["lang_status"] == {"de": "started_no_output",
+                                 "fr": "not_started", "it": "not_started"}
+    assert sa["new_api_requests"] == bl["new_api_requests"] == per_item + 1
+    assert args._budget.requests == per_item + 1  # retries would count too
+
+
+def test_lang_all_cap_mid_second_language(pipeline_env, monkeypatch):
+    """Cap trips in fr: de complete, fr started/partial, it not_started."""
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: _FakeResp())
+    probe = _args(lang="de", limit=1, max_requests=10**9)
+    _run._predict(probe, "splitalign")
+    per_de = probe._budget.requests
+    for d in (_run.RESULTS_DIR / "runs").iterdir():
+        for f in d.iterdir():
+            f.unlink()
+        d.rmdir()
+    args = _args(lang="all", limit=1, max_requests=per_de + 1)
+    _run.cmd_pipeline(args)
+    rd = next((_run.RESULTS_DIR / "runs").iterdir())
+    _assert_truthful_scope(rd)
+    sa = _strict(rd / "run_summary_splitalign_apertus_dev_val.json")
+    assert sa["lang_status"]["de"] == "complete"
+    assert sa["lang_status"]["fr"] in ("partial", "started_no_output")
+    assert sa["lang_status"]["it"] == "not_started"
+    assert (rd / "splitalign_apertus_admin_de.jsonl").exists()
+    e = _strict(rd / "eval_splitalign_apertus_dev_val.json")
+    assert e["macro_spearman"] is None          # strict: fr/it undefined
+    assert e["per_language"]["de"]["spearman"] is not None or \
+        e["per_language"]["de"]["invalid_reason"]
+    bl = _strict(rd / "run_summary_baseline_apertus_dev_val.json")
+    assert bl["budget_capped"] and bl["n_completed"] == 0
+    m = _strict(rd / "eval_matched_apertus_dev_val.json")
+    assert all(v["n_matched"] == 0 for v in m["per_language"].values())
+
+
+def test_lang_all_retry_storm_zero_outputs(pipeline_env, monkeypatch):
+    """500 storm with a large cap: every item fails, every language of both
+    methods is started_no_output, attempts (incl. retries) are counted."""
+    def boom(*a, **k):
+        raise urllib.error.HTTPError("u", 500, "", {}, io.BytesIO(b"x"))
+    monkeypatch.setattr(_ap.urllib.request, "urlopen", boom)
+    args = _args(lang="all", limit=1, max_requests=10**9)
+    _run.cmd_pipeline(args)
+    rd = next((_run.RESULTS_DIR / "runs").iterdir())
+    _assert_truthful_scope(rd)
+    for mode in ("splitalign", "baseline"):
+        s = _strict(rd / f"run_summary_{mode}_apertus_dev_val.json")
+        assert s["n_completed"] == 0 and not s.get("budget_capped")
+        assert set(s["lang_status"].values()) == {"started_no_output"}
+        assert s["attempts_without_usage"] == s["new_api_requests"] > 0
+        e = _strict(rd / f"eval_{mode}_apertus_dev_val.json")
+        assert all(v["invalid_reason"] == "no matched predictions"
+                   for v in e["per_language"].values())
+    # retries counted: more attempts than logical calls
+    assert args._budget.requests > args._budget.logical_calls > 0
+
+
+def test_export_viewer_requires_explicit_run(pipeline_env, monkeypatch):
+    """No implicit newest-run promotion; explicit run embeds identity."""
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: _FakeResp())
+    _run.cmd_pipeline(_args(max_requests=10**9))
+    rd = next((_run.RESULTS_DIR / "runs").iterdir())
+    import argparse
+    with pytest.raises(SystemExit, match="requires --run"):
+        _run.cmd_export_viewer(argparse.Namespace(
+            split="val", backend="apertus", run=None, mode="splitalign"))
+    _run.cmd_export_viewer(argparse.Namespace(
+        split="val", backend="apertus", run=rd.name, mode="splitalign"))
+    ev = _run.EVIDENCE_PATH.read_text()
+    evj = json.loads(ev[ev.index("{"):].rstrip().rstrip(";"))
+    assert evj["run"]["run_id"] == rd.name
+    assert evj["run"]["partial"] is False
+    assert evj["run"]["modes_intended_not_produced"] == []
+    assert evj["run"]["matched"]["n_matched"] == {"de": 1}
+    assert evj["run"]["source"] is not None
