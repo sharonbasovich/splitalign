@@ -68,7 +68,8 @@ import urllib.error
 import json as _json
 import pytest
 from splitalign.apertus import (ApertusClient, ApiBudget, ApertusUnavailable,
-                                BudgetExceeded)
+                                BoundNotConfigured, BudgetExceeded,
+                                TokenBoundSpec)
 from splitalign import apertus as _ap
 
 
@@ -89,8 +90,14 @@ class _FakeResp:
         return False
 
 
+TEST_SPEC = TokenBoundSpec(per_message_tokens=8, request_overhead_tokens=256,
+                           provenance="test fixture — conservative allowance",
+                           provider="test", model="m")
+
+
 def _client(budget, retries=5):
-    c = ApertusClient("http://fake", "k", "m", rps=0, max_retries=retries)
+    c = ApertusClient("http://fake", "k", "m", rps=0, max_retries=retries,
+                      bound_spec=TEST_SPEC)
     c.budget = budget
     return c
 
@@ -104,53 +111,63 @@ def _http_err(code):
     return urllib.error.HTTPError("u", code, "", {}, io.BytesIO(b"err"))
 
 
-def test_retries_count_as_requests(no_sleep, monkeypatch):
-    """Every outbound attempt (incl. 429 retries) consumes the cap."""
-    budget = ApiBudget(max_requests=3, max_tokens=10**9)
+def test_429_is_one_attempt_then_halt(no_sleep, monkeypatch):
+    """A 429 is one attempt with UNKNOWN cost: recorded, NO retry, halt."""
+    budget = ApiBudget(max_requests=10**9, max_tokens=10**9)
     client = _client(budget)
     monkeypatch.setattr(_ap.urllib.request, "urlopen",
                         lambda *a, **k: (_ for _ in ()).throw(_http_err(429)))
-    with pytest.raises(BudgetExceeded):
+    with pytest.raises(ApertusUnavailable):
         client.complete([{"role": "user", "content": "hi"}])
-    assert budget.requests == 3            # exactly 3 outbound attempts made
-    assert budget.attempts_no_usage == 3   # token cost unknown — reported
-    assert budget.tokens == 0
+    assert budget.requests == 1            # one dispatch, no retry
+    assert budget.attempts_no_usage == 1   # token cost unknown — reported
+    assert budget.measured_tokens == 0
+    # reservation retained: committed tokens stay at the reserved bound
+    assert budget.tokens == client._prompt_token_bound(
+        [{"role": "user", "content": "hi"}]) + 2048
+    # the attempt also POISONED the budget: no later reserve can dispatch
+    assert budget.poisoned
+    with pytest.raises(BudgetExceeded):
+        client.complete([{"role": "user", "content": "again"}])
 
 
-def test_token_preflight_blocks_new_attempt(no_sleep, monkeypatch):
-    """Token exhaustion stops the NEXT attempt before it leaves the client."""
-    budget = ApiBudget(max_requests=10**9, max_tokens=15)
+def test_reserved_bound_blocks_dispatch(no_sleep, monkeypatch):
+    """Reservation fits exactly -> 1 dispatch + reconcile; the NEXT request's
+    bound does not fit -> blocked BEFORE dispatch (zero bytes leave)."""
+    bound = _client(None)._prompt_token_bound([{"role": "user", "content": "a"}])
+    budget = ApiBudget(max_requests=10**9, max_tokens=bound)
     client = _client(budget)
     monkeypatch.setattr(_ap.urllib.request, "urlopen",
                         lambda *a, **k: _FakeResp(10, 5))
-    client.complete([{"role": "user", "content": "a"}])   # 15 tokens: at cap
-    assert budget.tokens == 15 and budget.requests == 1
-    with pytest.raises(BudgetExceeded, match="token cap"):
-        client.complete([{"role": "user", "content": "b"}])  # never sent
+    client.complete([{"role": "user", "content": "a"}], max_tokens=0)
     assert budget.requests == 1
+    assert budget.tokens == 15 and budget.measured_tokens == 15
+    with pytest.raises(BudgetExceeded, match="token cap"):
+        client.complete([{"role": "user", "content": "b"}], max_tokens=0)
+    assert budget.requests == 1            # second request never dispatched
 
 
-def test_timeouts_count_as_attempts(no_sleep, monkeypatch):
-    """Timeout/network failures are real attempts, counted then retried."""
-    budget = ApiBudget(max_requests=2, max_tokens=10**9)
+def test_timeout_is_one_attempt_then_halt(no_sleep, monkeypatch):
+    """A timeout is one attempt with unknown cost: recorded, NO retry."""
+    budget = ApiBudget(max_requests=10**9, max_tokens=10**9)
     client = _client(budget)
     monkeypatch.setattr(_ap.urllib.request, "urlopen",
                         lambda *a, **k: (_ for _ in ()).throw(
                             urllib.error.URLError("timeout")))
-    with pytest.raises(BudgetExceeded):
+    with pytest.raises(ApertusUnavailable):
         client.complete([{"role": "user", "content": "hi"}])
-    assert budget.requests == 2
+    assert budget.requests == 1 and budget.attempts_no_usage == 1
 
 
-def test_retry_exhaustion_raises_unavailable(no_sleep, monkeypatch):
-    """Retries exhausted -> ApertusUnavailable; every attempt was counted."""
+def test_500_is_one_attempt_no_retry(no_sleep, monkeypatch):
+    """A 500 is a single unknown-cost attempt; the client never retries."""
     budget = ApiBudget(max_requests=10**9, max_tokens=10**9)
     client = _client(budget, retries=2)
     monkeypatch.setattr(_ap.urllib.request, "urlopen",
                         lambda *a, **k: (_ for _ in ()).throw(_http_err(500)))
     with pytest.raises(ApertusUnavailable):
         client.complete([{"role": "user", "content": "hi"}])
-    assert budget.requests == 3            # initial + 2 retries
+    assert budget.requests == 1            # no retry after unknown cost
 
 
 def test_cache_hits_stay_free(tmp_path):

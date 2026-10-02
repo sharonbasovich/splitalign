@@ -139,10 +139,18 @@
     }
     $("evalSummary").textContent = es;
     const st = it.stats || {};
+    const isV3 = window.SplitAlignSchema.itemIsV3(it, st);
     $("meta").textContent =
       `${it.id} — ${it.lang} · ops: ${(it.ops || []).length}` +
       ` · repairs: ${st.repairs || 0} · parse failures: ${st.parse_failures || 0}` +
-      ` · spans matched/unmatched: ${st.span_matched || 0}/${st.span_unmatched || 0}` +
+      (isV3
+        ? ` · flagged a/b: ${st.flagged_a || 0}/${st.flagged_b || 0}` +
+          ` · invalid pairs: ${st.invalid_pairs || 0}` +
+          ` · punct ids dropped: ${st.dropped_punct_ids || 0}` +
+          ` · sim imputed: ${st.sim_imputed_cells || 0}` +
+          ` · judge coverage: ${st.judge_valid_token_coverage ?? "—"}`
+        : ` · span matched/unmatched: ${st.span_matched ?? 0}/${st.span_unmatched ?? 0}` +
+          ` · unparseable sim: ${st.unparseable_similarity ?? 0}`) +
       ` · cached judgments: ${(it.judgments || []).filter(j => j && j.cached).length}`;
   }
 
@@ -170,8 +178,7 @@
       const j = (it.judgments || [])[k];
       const aTxt = op.a_start >= 0 ? segsA.slice(op.a_start, op.a_end).map(s => s.text).join(" ") : "";
       const bTxt = op.b_start >= 0 ? segsB.slice(op.b_start, op.b_end).map(s => s.text).join(" ") : "";
-      const badge = j && j.ok ? `<span class="diff-badge">diff ${j.difference}/5</span>` :
-                    j && !j.ok ? `<span class="diff-badge">judge failed → fallback</span>` : "";
+      const badge = window.SplitAlignSchema.judgeBadge(j);
       div.innerHTML =
         `<span class="op-tag ${op.op === "1:1" ? "" : "asym"}">${op.op}</span>` +
         `<div class="cell">${esc(aTxt) || "<em>—</em>"}</div>` +

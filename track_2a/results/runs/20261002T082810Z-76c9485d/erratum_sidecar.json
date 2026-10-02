@@ -1,0 +1,15 @@
+{
+  "erratum": "per-method usage attribution",
+  "run_id": "20261002T082810Z-76c9485d",
+  "issued_utc": "2026-10-02",
+  "scope": [
+    "run_summary_splitalign_apertus_dev_val.json",
+    "run_summary_baseline_apertus_dev_val.json"
+  ],
+  "statement": "Both run summaries report 'new_api_requests': 22 and 'new_api_tokens': 8098. These are SHARED ApiBudget totals across the whole invocation, not per-method usage. Per-method attribution (from run-scoped calls.jsonl, by call kind): splitalign issued all 22 new outbound attempts (all kind=judge_pair) plus 6 cached pair_similarity calls = 8098 tokens; baseline issued 0 new attempts — its 4 logical doc_baseline calls were all cache hits on identical payload/model/prompt-version/split/ID entries.",
+  "correct_attribution": {
+    "splitalign": {"new_attempts": 22, "cached_calls": 6, "prompt_tokens": 7127, "completion_tokens": 971, "attempts_no_usage": 0, "errors": 0},
+    "baseline": {"new_attempts": 0, "cached_calls": 4, "prompt_tokens": 0, "completion_tokens": 0, "attempts_no_usage": 0, "errors": 0}
+  },
+  "note": "Original files preserved verbatim. Runs produced by splitalign >= 0.2.0 record per-method usage (method_usage) so this ambiguity cannot recur. Cache-hit reuse is only valid because the full backend/model/prompt_version/kind/split/item/payload identity matched."
+}

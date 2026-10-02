@@ -1,0 +1,34 @@
+{
+  "mode": "baseline",
+  "backend": "apertus",
+  "split": "dev/val",
+  "completed_ids": {
+    "de": [
+      "admin_de_17"
+    ],
+    "fr": [
+      "admin_fr_17"
+    ],
+    "it": [
+      "admin_it_17"
+    ]
+  },
+  "remaining_ids": {
+    "de": [],
+    "fr": [],
+    "it": []
+  },
+  "lang_status": {
+    "de": "complete",
+    "fr": "complete",
+    "it": "complete"
+  },
+  "n_planned": 3,
+  "n_completed": 3,
+  "new_api_requests": 22,
+  "new_api_tokens": 8098,
+  "logical_calls": 22,
+  "attempts_without_usage": 0,
+  "overshoot_note": "a single in-flight request may overshoot the token cap by at most prompt + bounded max_tokens completion",
+  "elapsed_s": 0.0
+}

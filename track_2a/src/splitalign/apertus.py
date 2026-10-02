@@ -29,9 +29,11 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -48,7 +50,13 @@ class MissingCredentials(RuntimeError):
 
 
 class ApertusUnavailable(RuntimeError):
-    pass
+    """``usage`` = (prompt_tokens, completion_tokens) when the provider
+    reported VALID usage before the error was raised (e.g. a bound
+    violation) — the known usage is preserved, never dropped."""
+
+    def __init__(self, msg: str, *, usage: tuple[int, int] | None = None):
+        super().__init__(msg)
+        self.usage = usage
 
 
 @dataclass
@@ -72,26 +80,46 @@ class CallLogger:
     def __init__(self, path: Path | None, run_id: str | None = None):
         self.path = Path(path) if path else None
         self.run_id = run_id
+        self._seq = 0
+        # one CallLogger per item shares the run's calls.jsonl — a per-logger
+        # id keeps attempt_id unique across instances appending to it
+        self._logger_id = uuid.uuid4().hex[:8]
 
     def log(self, *, split: str, item_id: str, kind: str, messages,
             result: ChatResult | None, ok: bool, error: str | None,
             cached: bool, backend: str | None = None,
-            model: str | None = None) -> None:
+            model: str | None = None, method: str | None = None,
+            dispatched: bool = False, reserved: int | None = None,
+            usage: tuple[int, int] | None = None) -> None:
         if not self.path:
             return
+        self._seq += 1
         self.path.parent.mkdir(parents=True, exist_ok=True)
         prompt_text = "\n".join(m.get("content", "") for m in messages)
+        pt = result.prompt_tokens if result else (usage[0] if usage else None)
+        ct = (result.completion_tokens if result
+              else (usage[1] if usage else None))
         rec = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            # unique run/method/attempt identity for every record
+            "attempt_id": f"{self.run_id}-{self._logger_id}-{self._seq}",
             "run_id": self.run_id,
+            "method": method,
             "split": split, "item_id": item_id, "kind": kind,
+            # outbound-boundary truth: only dispatched records are real
+            # transport attempts; budget/bound blocks are predispatch events
+            "dispatched": dispatched,
+            "reserved_tokens": reserved,
+            # known | unknown | None — never silently zero
+            "usage_status": ("known" if (result or usage) else
+                             "unknown" if dispatched else None),
             # actual backend/model on EVERY record, incl. cache-hit/error paths
             "backend": (result.backend if result else backend),
             "model": (result.model if result else model),
             "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest(),
             "prompt_chars": len(prompt_text),
-            "prompt_tokens": result.prompt_tokens if result else None,
-            "completion_tokens": result.completion_tokens if result else None,
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
             "latency_ms": result.latency_ms if result else None,
             "usage_estimated": result.usage_estimated if result else None,
             "cached": cached,
@@ -111,17 +139,26 @@ class ApertusClient:
 
     def __init__(self, base: str, key: str, model: str,
                  timeout_s: float = 120.0, rps: float = 2.0,
-                 max_retries: int = 5):
+                 max_retries: int = 0,
+                 bound_spec: "TokenBoundSpec | None" = None):
         self.base = base.rstrip("/")
         self.key = key
         self.model = model
         self.timeout_s = timeout_s
         self.min_interval = 1.0 / rps if rps > 0 else 0.0
-        self.max_retries = max_retries
+        self.max_retries = 0  # kept for signature compat; retries are
+        # disabled: any failed attempt has unknown token cost => halt
         self._last_call = 0.0
+        # reservation held for the most recent complete() (None when the
+        # call was blocked predispatch or had no budget) — for attempt logs
+        self.last_reservation: int | None = None
         # optional shared ApiBudget; set post-construction by the caller so
         # the SAME object governs every attempt across both methods
         self.budget = None
+        # required for ANY dispatch: an explicit conservative prompt-token
+        # bound spec (provider/model/message-format specific, with
+        # provenance). None => every call fails closed before dispatch.
+        self.bound_spec = bound_spec
 
     @classmethod
     def from_env(cls) -> "ApertusClient":
@@ -130,10 +167,19 @@ class ApertusClient:
         model = os.environ.get("APERTUS_MODEL")
         if not (base and key and model):
             raise MissingCredentials()
+        spec = None
+        spec_json = os.environ.get("APERTUS_BOUND_SPEC_JSON")
+        if spec_json:
+            try:
+                spec = TokenBoundSpec(**json.loads(spec_json))
+            except (json.JSONDecodeError, TypeError) as e:
+                raise BoundNotConfigured(
+                    f"APERTUS_BOUND_SPEC_JSON invalid: {e}") from e
         return cls(
             base=base, key=key, model=model,
             timeout_s=float(os.environ.get("APERTUS_TIMEOUT_S", "120")),
             rps=float(os.environ.get("APERTUS_RPS", "2")),
+            bound_spec=spec,
         )
 
     def _throttle(self) -> None:
@@ -141,8 +187,52 @@ class ApertusClient:
         if wait > 0:
             time.sleep(wait)
 
+    def _prompt_token_bound(self, messages) -> int:
+        """Conservative prompt-token bound under the CONFIGURED
+        :class:`TokenBoundSpec` — message count, per-message role/template
+        overhead, request-level special tokens, and UTF-8 content bytes of
+        EVERY message (multi-turn / repair history included). Without a
+        spec, or when the spec does not cover this model or this message
+        shape, raises :class:`BoundNotConfigured` BEFORE any dispatch: the
+        token allowance is conditional on a configured bound and is never
+        treated as an unconditional guarantee."""
+        spec = self.bound_spec
+        if spec is None:
+            raise BoundNotConfigured(
+                "no token-bound configuration — dispatch BLOCKED: the token "
+                "allowance is conditional on a configured conservative bound")
+        if spec.model and spec.model != self.model:
+            raise BoundNotConfigured(
+                f"bound spec covers model '{spec.model}', not '{self.model}'")
+        total = spec.request_overhead_tokens
+        for m in messages:
+            if not isinstance(m.get("role"), str) or \
+                    not isinstance(m.get("content"), str):
+                raise BoundNotConfigured(
+                    "message shape outside the configured bound spec "
+                    "(role/content must be strings)")
+            total += spec.per_message_tokens + len(m["content"].encode("utf-8"))
+        return total
+
+    @staticmethod
+    def _valid_usage(payload) -> tuple[int, int] | None:
+        """Return (prompt_tokens, completion_tokens) only when usage carries
+        both fields as nonnegative true integers — anything else means the
+        attempt's token cost is UNKNOWN (never treated as zero)."""
+        u = payload.get("usage")
+        if not isinstance(u, dict):
+            return None
+        out = []
+        for k in ("prompt_tokens", "completion_tokens"):
+            v = u.get(k)
+            if not (isinstance(v, int) and not isinstance(v, bool) and v >= 0):
+                return None
+            out.append(v)
+        return out[0], out[1]
+
     def complete(self, messages, *, max_tokens: int = 2048,
                  temperature: float = 0.0, seed: int | None = None) -> ChatResult:
+        self.last_reservation = None
         body: dict = {
             "model": self.model,
             "messages": messages,
@@ -153,56 +243,85 @@ class ApertusClient:
             body["seed"] = seed
         data = json.dumps(body).encode()
         url = f"{self.base}/chat/completions"
-        attempt = 0
-        while True:
-            # cap check at the ACTUAL outbound boundary: no attempt — retried
-            # or fresh — leaves the client while either budget is exhausted
+        # Conservative prompt bound is REQUIRED for any dispatch — absent
+        # a configured spec this raises BoundNotConfigured BEFORE any bytes
+        # leave (fail-closed; the token allowance is conditional, the
+        # request cap is the only unconditional limit).
+        bound = self._prompt_token_bound(messages) + max_tokens
+        # Atomic predispatch reservation: one request slot plus the bound
+        # on this request's prompt + bounded completion. If either cap
+        # would be exceeded — or the budget is poisoned by an earlier
+        # unknown-cost attempt or bound violation — reserve raises BEFORE
+        # dispatch: a halted or exhausted budget permits zero dispatch.
+        reserved = 0
+        if self.budget is not None:
+            reserved = self.budget.reserve(bound)
+            self.last_reservation = reserved
+        self._throttle()
+        t0 = time.monotonic()
+        req = urllib.request.Request(
+            url, data=data, method="POST",
+            headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {self.key}"})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
+                payload = json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            self._last_call = time.monotonic()
             if self.budget is not None:
-                self.budget.preflight()
-            self._throttle()
-            t0 = time.monotonic()
-            req = urllib.request.Request(
-                url, data=data, method="POST",
-                headers={"Content-Type": "application/json",
-                         "Authorization": f"Bearer {self.key}"})
-            try:
-                with urllib.request.urlopen(req, timeout=self.timeout_s) as r:
-                    payload = json.loads(r.read().decode())
-                self._last_call = time.monotonic()
-                choice = payload["choices"][0]
-                text = choice["message"]["content"]
-                usage = payload.get("usage") or {}
-                pt = int(usage.get("prompt_tokens", 0))
-                ct = int(usage.get("completion_tokens", 0))
-                if self.budget is not None:
-                    self.budget.charge_attempt(pt, ct)
-                return ChatResult(
-                    text=text,
-                    model=payload.get("model", self.model),
-                    backend=self.backend,
-                    prompt_tokens=pt,
-                    completion_tokens=ct,
-                    latency_ms=(time.monotonic() - t0) * 1000.0,
-                )
-            except urllib.error.HTTPError as e:
-                self._last_call = time.monotonic()
-                if self.budget is not None:
-                    self.budget.charge_attempt()  # attempt happened, usage unknown
-                if e.code in (429, 500, 502, 503, 504) and attempt < self.max_retries:
-                    attempt += 1
-                    time.sleep(min(2 ** attempt, 30))
-                    continue
+                self.budget.fail_unknown(f"HTTP {e.code}")
+            raise ApertusUnavailable(
+                f"Apertus HTTP {e.code} — attempt consumed, token cost "
+                f"UNKNOWN; run halts (no retry after unknown cost)") from e
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            if self.budget is not None:
+                self.budget.fail_unknown(f"transport error: {e}")
+            raise ApertusUnavailable(
+                f"Apertus unreachable ({e}) — attempt consumed, token cost "
+                f"UNKNOWN; run halts (no retry after unknown cost)") from e
+        except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as e:
+            if self.budget is not None:
+                self.budget.fail_unknown("malformed JSON response")
+            raise ApertusUnavailable(
+                f"Apertus response body not valid JSON — attempt consumed, "
+                f"token cost UNKNOWN; run halts") from e
+        self._last_call = time.monotonic()
+        try:
+            text = payload["choices"][0]["message"]["content"]
+            if not isinstance(text, str):
+                raise TypeError("content is not a string")
+        except (KeyError, IndexError, TypeError) as e:
+            if self.budget is not None:
+                self.budget.fail_unknown("missing choices/content")
+            raise ApertusUnavailable(
+                f"Apertus response missing choices/content ({e}) — attempt "
+                f"consumed, token cost UNKNOWN; run halts") from e
+        usage = self._valid_usage(payload)
+        if usage is None:
+            if self.budget is not None:
+                self.budget.fail_unknown("missing/malformed usage")
+            raise ApertusUnavailable(
+                "Apertus response missing/malformed usage — attempt "
+                "consumed, token cost UNKNOWN; run halts")
+        pt, ct = usage
+        if self.budget is not None:
+            if self.budget.reconcile(reserved, pt, ct):
+                # Provider usage exceeded the reserved bound: the violation
+                # cannot be undone — actual usage is recorded in full
+                # (never clipped), the shared budget is poisoned, and the
+                # run halts. Conditional bounds are not guarantees.
                 raise ApertusUnavailable(
-                    f"Apertus endpoint error HTTP {e.code}: "
-                    f"{e.read()[:300]!r}") from e
-            except (urllib.error.URLError, TimeoutError, OSError) as e:
-                if self.budget is not None:
-                    self.budget.charge_attempt()  # attempt happened, usage unknown
-                if attempt < self.max_retries:
-                    attempt += 1
-                    time.sleep(min(2 ** attempt, 30))
-                    continue
-                raise ApertusUnavailable(f"Apertus endpoint unreachable: {e}") from e
+                    f"provider usage {pt + ct} exceeded reserved bound "
+                    f"{reserved} — bound violated; run halts",
+                    usage=(pt, ct))
+        return ChatResult(
+            text=text,
+            model=payload.get("model", self.model),
+            backend=self.backend,
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            latency_ms=(time.monotonic() - t0) * 1000.0,
+        )
 
 
 # --------------------------------------------------------------------------
@@ -258,52 +377,123 @@ def lexical_similarity(a: str, b: str) -> float:
 
 
 class BudgetExceeded(RuntimeError):
-    """Noncached API budget exhausted — the run stops cleanly."""
+    """Noncached API budget exhausted or halted — the run stops cleanly."""
+
+
+class BoundNotConfigured(RuntimeError):
+    """No conservative token-bound configuration: dispatch is BLOCKED.
+    The token allowance is conditional on a configured bound — unlike the
+    request cap, it is never an unconditional guarantee."""
+
+
+@dataclass(frozen=True)
+class TokenBoundSpec:
+    """Explicit conservative prompt-token bound configuration for ONE
+    provider/model/message-format. ``per_message_tokens`` covers role +
+    per-message template overhead; ``request_overhead_tokens`` covers
+    request-level special tokens/wrapper; content is bounded by UTF-8
+    bytes (>= tokens for byte-level BPE). ``provenance`` must state where
+    these numbers come from and under which assumptions (tokenizer
+    verification or deliberate looseness). Absent a spec, ApertusClient
+    refuses to dispatch."""
+    per_message_tokens: int
+    request_overhead_tokens: int
+    provenance: str
+    provider: str = ""
+    model: str = ""
 
 
 @dataclass
 class ApiBudget:
-    """Hard cap on NEW (noncached) API spend across a whole run.
+    """Cap on NEW (noncached) API spend across a whole run, enforced by
+    ATOMIC PREDISPATCH RESERVATION inside ``ApertusClient.complete``.
 
-    Accounting lives at the ACTUAL OUTBOUND ATTEMPT boundary inside
-    ``ApertusClient.complete``: every HTTP attempt — including retries,
-    429/5xx and timeout failures — increments ``requests``, so failed or
-    retried calls cannot bypass the cap. ``tokens`` sums usage measured
-    on responses; attempts that failed before a response report no usage
-    and are counted in ``attempts_no_usage`` (token cost unknown —
-    reported as uncertainty, never silently treated as free).
-    ``preflight`` is checked before EVERY outbound attempt and blocks on
-    EITHER cap. A single in-flight request can overshoot the token cap
-    by at most its prompt + bounded completion budget (``max_tokens``
-    requests are always bounded) — the only possible overshoot.
+    Before any bytes leave, ``reserve`` atomically (under a lock) claims one
+    request slot plus a CONFIGURED conservative bound on that request's
+    prompt tokens (``TokenBoundSpec``: per-message + request overhead +
+    UTF-8 content bytes) and bounded completion (``max_tokens``). The
+    request cap is the unconditional limit; the token allowance is
+    CONDITIONAL on the configured bound — if provider usage ever exceeds a
+    reservation, the violation is recorded in full (never clipped), the
+    budget is poisoned and the run halts.
 
-    Cache hits never consume budget — reuse is allowed only when the
-    cache key (backend|model|prompt_version|kind|split|item|payload)
-    matches exactly, which DiskCache already enforces.
+    After the response, ``reconcile`` releases the unused part of the
+    reservation only when provider ``usage`` is present AND valid (both
+    fields nonnegative true integers). Otherwise ``fail_unknown`` RETAINS
+    the reservation AND POISONS the budget — every later ``reserve`` on
+    any client or method sharing this object rejects before dispatch, so
+    an unknown-cost attempt permanently halts the whole run: no retry is
+    ever attempted after it. ``tokens`` is therefore committed spend
+    (measured + still-held reservations); ``measured_tokens`` is the
+    provider-reported subset.
+
+    Cache hits never consume budget — reuse is allowed only when the cache
+    key (backend|model|prompt_version|kind|split|item|payload) matches
+    exactly, which DiskCache already enforces.
     """
     max_requests: int = 500
     max_tokens: int = 600_000
-    requests: int = 0            # actual outbound HTTP attempts (incl. retries)
-    tokens: int = 0              # measured prompt+completion across attempts
-    attempts_no_usage: int = 0   # failed attempts with unknown token cost
-    logical_calls: int = 0       # non-cached judge calls (each may retry)
+    requests: int = 0            # reserved == dispatched attempts
+    tokens: int = 0              # committed: measured + held reservations
+    measured_tokens: int = 0     # provider-reported usage only (unclipped)
+    attempts_no_usage: int = 0   # dispatched attempts with unknown token cost
+    logical_calls: int = 0       # non-cached judge calls
+    bound_violations: int = 0    # provider usage exceeded a reserved bound
+    poisoned: str | None = None  # halt reason; poisons ALL future reserves
 
-    def preflight(self) -> None:
-        if self.requests >= self.max_requests:
-            raise BudgetExceeded(
-                f"request cap reached ({self.requests}/{self.max_requests})")
-        if self.tokens >= self.max_tokens:
-            raise BudgetExceeded(
-                f"token cap reached ({self.tokens}/{self.max_tokens})")
+    def __post_init__(self) -> None:
+        self._lock = threading.Lock()
 
-    def charge_attempt(self, prompt_tokens: int = 0,
-                       completion_tokens: int = 0) -> None:
-        """Account one actual outbound attempt, called after it returns."""
-        self.requests += 1
-        if prompt_tokens or completion_tokens:
-            self.tokens += prompt_tokens + completion_tokens
-        else:
+    def poison(self, reason: str) -> None:
+        """Halt latch: every later ``reserve`` — across clients and methods
+        sharing this budget — rejects before dispatch."""
+        with self._lock:
+            if self.poisoned is None:
+                self.poisoned = reason
+
+    def reserve(self, bound_tokens: int) -> int:
+        """Atomically hold 1 attempt + ``bound_tokens``; raises BEFORE dispatch."""
+        with self._lock:
+            if self.poisoned is not None:
+                raise BudgetExceeded(f"run halted: {self.poisoned}")
+            if self.requests >= self.max_requests:
+                raise BudgetExceeded(
+                    f"request cap reached ({self.requests}/{self.max_requests})")
+            if self.tokens + bound_tokens > self.max_tokens:
+                raise BudgetExceeded(
+                    f"token cap would be exceeded by reserved bound "
+                    f"({self.tokens}+{bound_tokens}/{self.max_tokens})")
+            self.requests += 1
+            self.tokens += bound_tokens
+        return bound_tokens
+
+    def reconcile(self, reserved: int, prompt_tokens: int,
+                  completion_tokens: int) -> bool:
+        """Valid usage received: charge actual usage IN FULL (never clipped)
+        and release the unused part of the reservation. Returns True when
+        provider usage EXCEEDED the reserved bound — a bound violation that
+        cannot be undone, so the budget is poisoned and the caller halts."""
+        actual = prompt_tokens + completion_tokens
+        violated = actual > reserved
+        with self._lock:
+            self.tokens += actual - reserved
+            self.measured_tokens += actual
+            if violated:
+                self.bound_violations += 1
+                if self.poisoned is None:
+                    self.poisoned = (
+                        f"provider usage {actual} exceeded reserved bound "
+                        f"{reserved} — bound violated, run halted")
+        return violated
+
+    def fail_unknown(self, reason: str = "unknown-cost attempt") -> None:
+        """Dispatched attempt whose cost is UNKNOWN: keep the reservation
+        held (worst case stays committed), count it explicitly, and poison
+        the budget — no later reserve on ANY client/method may dispatch."""
+        with self._lock:
             self.attempts_no_usage += 1
+            if self.poisoned is None:
+                self.poisoned = reason
 
 
 class MockApertusClient:
@@ -336,6 +526,8 @@ class MockApertusClient:
     def _dispatch(self, content: str) -> str:
         if '"kind": "pair_similarity"' in content:
             return self._mock_similarity(content)
+        if '"kind": "judge_tag"' in content:
+            return self._mock_judge_tag(content)
         if '"kind": "judge_pair"' in content:
             return self._mock_judge(content)
         if '"kind": "doc_baseline"' in content:
@@ -365,6 +557,24 @@ class MockApertusClient:
             spans_b = [" ".join(wb[:3])] if wb else []
         return json.dumps({"semantic_difference": diff,
                            "differing_spans": {"side_a": spans_a, "side_b": spans_b}})
+
+    def _mock_judge_tag(self, content: str) -> str:
+        """Deterministic v3-tag mock: flag indices whose normalized token
+        does not appear on the other side (lexical proxy, NOT semantic)."""
+        req = _extract_json_block(content)
+        arr_a = req.get("a", [])
+        arr_b = req.get("b", [])
+        def norm(t):
+            return str(t).lower().strip(".,;:!?\"'()[]{}«»“”")
+        words_a = {norm(t) for _, t in arr_a if norm(t)}
+        words_b = {norm(t) for _, t in arr_b if norm(t)}
+        def keep(tok):
+            n = norm(tok)
+            return bool(n) and not re.fullmatch(r"\d+([.,]\d+)?%?", n) \
+                and len(n) > 1
+        a_ids = [i for i, t in arr_a if keep(t) and norm(t) not in words_b]
+        b_ids = [i for i, t in arr_b if keep(t) and norm(t) not in words_a]
+        return json.dumps({"a_ids": a_ids, "b_ids": b_ids})
 
     def _mock_baseline(self, content: str) -> str:
         req = _extract_json_block(content)

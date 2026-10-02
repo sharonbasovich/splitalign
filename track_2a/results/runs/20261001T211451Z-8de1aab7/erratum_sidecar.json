@@ -1,0 +1,9 @@
+{
+  "erratum": "per-method usage attribution + bug-affected status",
+  "run_id": "20261001T211451Z-8de1aab7",
+  "issued_utc": "2026-10-02",
+  "scope": ["run_summary_splitalign_apertus_dev_val.json"],
+  "statement": "The summary's 'new_api_requests': 97 and 'new_api_tokens': 72624 are SHARED ApiBudget totals across the invocation, not per-method usage. This run predates run-scoped call logs, so a per-method split is a missing record and cannot be reconstructed (its calls are inside the pre-scope lifetime window in results/calls.jsonl).",
+  "bug_affected": "All outputs in this run directory are BUG-AFFECTED: predict_item lacked language propagation, so FR and IT items were judged with German judge prompts. These artifacts are historical provenance only and are never usable as evidence for the corrected (v2-lang or later) configuration.",
+  "note": "Original files preserved verbatim; nothing overwritten."
+}

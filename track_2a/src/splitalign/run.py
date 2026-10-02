@@ -25,9 +25,10 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
-from . import PROMPT_VERSION, __version__, guard
+from . import METHOD_VERSIONS, PROMPT_VERSION, PROMPT_VERSION_BY_KIND, __version__, guard
 from .align import AlignConfig
-from .apertus import (ApiBudget, ApertusUnavailable, BudgetExceeded,
+from .apertus import (ApiBudget, ApertusUnavailable, BoundNotConfigured,
+                      BudgetExceeded,
                       MissingCredentials)
 from .evaluate import _dump, evaluate_predictions, evaluate_split
 from .fetch_data import ALLOWLIST, fetch, load_gold_items, write_manifest
@@ -194,6 +195,8 @@ def _predict(args, mode: str) -> int:
         "source": _source_info(),
         "splitalign_version": __version__,
         "prompt_version": PROMPT_VERSION,
+        "prompt_versions_by_kind": PROMPT_VERSION_BY_KIND,
+        "method_versions": METHOD_VERSIONS,
         "gold_sha256": _gold_sha256(split, langs),
         "score_config": asdict(score_cfg),
         "cli": {k: getattr(args, k, None) for k in
@@ -213,6 +216,7 @@ def _predict(args, mode: str) -> int:
                                             item["id"], seed, budget=budget,
                                             run_id=run_dir.name,
                                             log_path=run_dir / "calls.jsonl")
+                judge.method = mode
                 try:
                     if mode == "baseline":
                         out = predict_baseline_item(item, judge)
@@ -220,14 +224,16 @@ def _predict(args, mode: str) -> int:
                         out = predict_item(item, judge, score_cfg=score_cfg,
                                            lang=lang)
                 except ApertusUnavailable as e:
-                    # truthful per-item failure: no prediction, run continues
+                    # unknown-cost attempt: record the failed item, then HALT
+                    # the run fail-closed (no further dispatches after an
+                    # attempt whose token cost is unknown)
                     det = {"id": item["id"], "lang": lang, "failed": True,
                            "error": str(e)[:300],
                            "provenance": provenance(backend, judge,
                                                     {"mode": mode, "split": split})}
                     all_details.append(det)
                     print(f"  {item['id']}: FAILED ({mode}) {e}", file=sys.stderr)
-                    continue
+                    raise
                 recs.append(out["record"])
                 completed_ids[lang].append(item["id"])
                 det = dict(out["detail"])
@@ -248,10 +254,13 @@ def _predict(args, mode: str) -> int:
                 for r in recs:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             print(f"wrote {len(recs)} predictions -> {path}")
-    except BudgetExceeded as e:
-        # hard cap hit mid-item: keep every completed record, report honestly
+    except (BudgetExceeded, BoundNotConfigured, ApertusUnavailable) as e:
+        # cap hit, missing bound config, poisoned budget OR unknown-cost
+        # attempt: keep every completed record, report honestly, halt
+        # fail-closed
         capped = str(e)
-        print(f"BUDGET CAP: {capped} — writing partial results", file=sys.stderr)
+        print(f"RUN STOPPED: {capped} — writing partial results",
+              file=sys.stderr)
         if recs and lang is not None:  # bound from the interrupted iteration
             path = _pred_path(run_dir, backend, mode, lang)
             with path.open("w") as f:
@@ -278,18 +287,32 @@ def _predict(args, mode: str) -> int:
         "lang_status": {l: _status(l) for l in langs},
         "n_planned": sum(len(v) for v in planned_ids.values()),
         "n_completed": sum(len(v) for v in completed_ids.values()),
+        "method_version": METHOD_VERSIONS[mode],
         "budget_capped": capped,
+        # these are SHARED run totals across both modes (one ApiBudget) —
+        # per-method figures are under "method_usage"
         "new_api_requests": budget.requests if budget else 0,
-        "new_api_tokens": budget.tokens if budget else 0,
+        "tokens_measured": budget.measured_tokens if budget else 0,
+        "tokens_committed": budget.tokens if budget else 0,
         "logical_calls": budget.logical_calls if budget else 0,
         "attempts_without_usage": budget.attempts_no_usage if budget else 0,
+        "bound_violations": budget.bound_violations if budget else 0,
+        "budget_halted": budget.poisoned if budget else None,
+        "method_usage": _method_usage(run_dir / "calls.jsonl", mode,
+                                      budget),
         "usage_uncertainty_note": (
-            f"{budget.attempts_no_usage} failed HTTP attempt(s) have unknown "
-            "token cost and are NOT included in new_api_tokens"
+            f"{budget.attempts_no_usage} dispatched attempt(s) have unknown "
+            "token cost; their RESERVED bounds stay committed in "
+            "tokens_committed and are NOT included in tokens_measured; the "
+            "shared budget is poisoned so no later dispatch can occur"
             if budget and budget.attempts_no_usage else None),
-        "overshoot_note": (
-            "a single in-flight request may overshoot the token cap by at "
-            "most prompt + bounded max_tokens completion" if budget else None),
+        "token_allowance_note": (
+            "the token allowance is CONDITIONAL on the configured "
+            "conservative bound spec — the request cap is the only "
+            "unconditional limit. Provider usage exceeding a reserved bound "
+            "cannot be undone: it is recorded in full, flagged as a bound "
+            "violation, and halts the run"
+            if budget else None),
         "elapsed_s": round(elapsed, 1),
         "caution": ("PARTIAL RUN — do not treat coverage as complete"
                     if capped else None),
@@ -298,7 +321,9 @@ def _predict(args, mode: str) -> int:
     spath.write_text(json.dumps({k: v for k, v in summary.items() if v is not None},
                                 indent=2))
     print(f"run summary -> {spath}")
-    return 0
+    # propagate stopped status so cmd_pipeline skips remaining methods
+    args._stop_reason = capped
+    return 1 if capped else 0
 
 
 def cmd_evaluate(args) -> int:
@@ -514,7 +539,7 @@ def cmd_export_viewer(args) -> int:
                           inference=inference, split=split, evaluation=evals,
                           limitations=lims, run=run_info)
     # keep the viewer self-contained wherever OUT_DIR points
-    for name in ("index.html", "style.css", "app.js"):
+    for name in ("index.html", "style.css", "schema.js", "app.js"):
         src = TRACK_DIR / "viewer" / name
         dst = EVIDENCE_PATH.parent / name
         if src.resolve() != dst.resolve():
@@ -527,7 +552,7 @@ def cmd_export_viewer(args) -> int:
 
 def _limitations(backend: str) -> list[str]:
     lims = [
-        "Sentence-level judgments are mapped to uniform token scores except on reported differing spans — fine-grained in-sentence variation is approximated.",
+        "Matched-pair localization comes from the judge's token-index tags (v3-tag), not a uniform per-pair score; pairs invalid after one repair fall back to a declared score of 0 and are counted.",
         "Cross-lingual alignment is monotone; non-monotone reordering is not modelled.",
         "Only dev/train and dev/val were used; the held-out firewall is enforced by this build's guard module.",
         "The 'baseline' method is our re-implemented whole-document token-annotation prompt (same response contract; not the upstream template).",
@@ -536,6 +561,52 @@ def _limitations(backend: str) -> list[str]:
     if backend == "mock":
         lims.insert(0, "MOCK backend: all shown outputs are deterministic lexical heuristics, NOT Apertus inference. Numbers are plumbing validations only.")
     return lims
+
+
+def _method_usage(calls_path: Path, mode: str, budget) -> dict:
+    """Per-method call accounting, SEPARATE from shared run totals.
+
+    Counts logged calls by kind->method mapping. Cache hits are free and
+    counted separately; ``new_requests`` counts logged OUTBOUND attempts
+    (``dispatched`` records — predispatch budget/bound blocks are counted
+    separately as ``blocked_predispatch``). Shared-budget ``requests``
+    remains the authoritative attempt count.
+    """
+    kinds = {"splitalign": {"pair_similarity", "judge_tag", "judge_pair"},
+             "baseline": {"doc_baseline"}}[mode]
+    new_requests = new_tokens = cached_calls = errors = blocked = 0
+    if calls_path.exists():
+        for line in calls_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if rec.get("kind") not in kinds:
+                continue
+            if rec.get("cached"):
+                cached_calls += 1
+                continue
+            if rec.get("dispatched") is False:
+                blocked += 1      # predispatch block — no bytes left
+                if rec.get("error"):
+                    errors += 1
+                continue
+            new_requests += 1
+            new_tokens += ((rec.get("prompt_tokens") or 0)
+                           + (rec.get("completion_tokens") or 0))
+            if rec.get("error"):
+                errors += 1
+    return {"new_requests": new_requests,
+            "new_tokens": new_tokens,
+            "cached_calls": cached_calls,
+            "blocked_predispatch": blocked,
+            "errors": errors,
+            # unknown-usage attempts are run-level only — the shared counter
+            # must not masquerade as method-specific
+            "unknown_usage_attempts": None,
+            "note": ("per-method counts from the run-scoped call log "
+                     "(logical calls); unknown-usage attempts are a SHARED "
+                     "run-level figure — see attempts_without_usage in the "
+                     "summary, not attributable to a single method")}
 
 
 def _matched_eval(run_dir: Path, split: str, langs, backend: str,
@@ -578,12 +649,61 @@ def _matched_eval(run_dir: Path, split: str, langs, backend: str,
         "note": ("methods compared only on identical produced IDs; "
                  "macro is null unless ALL required languages are matched "
                  "and finite"),
+        "method_versions": METHOD_VERSIONS,
+        "baseline_disclaimer": (
+            "the baseline is the repair-exhausted fallback_label=5 policy "
+            "on an unchanged v1 prompt — a reference, not a strong "
+            "comparator"),
+        "diagnostics": _method_diagnostics(run_dir, split, backend),
         "per_language": per_lang,
         "macro_matched": {
             "splitalign": _macro(macros["splitalign"]),
             "baseline": _macro(macros["baseline"]),
         },
     }
+
+
+def _method_diagnostics(run_dir: Path, split: str, backend: str) -> dict:
+    """Aggregate v3 coverage/validity metrics from per-item details."""
+    tag = split.replace("/", "_")
+    out = {}
+    for mode in ("splitalign", "baseline"):
+        p = run_dir / f"details_{mode}_{backend}_{tag}.json"
+        if not p.exists():
+            continue
+        items = json.loads(p.read_text())
+        agg: dict = {"items": len(items)}
+        if mode == "splitalign":
+            tot = {"flagged_a": 0, "flagged_b": 0, "dropped_punct_ids": 0,
+                   "invalid_pairs": 0, "invalid_fallback_tokens": 0,
+                   "sim_unknown_cells": 0, "sim_imputed_cells": 0,
+                   "ops_touching_unknown": 0,
+                   "matched_tokens": 0, "valid_matched_tokens": 0}
+            for it in items:
+                st = it.get("stats", {})
+                for k in tot:
+                    tot[k] += st.get(k) or 0
+            agg.update(tot)
+            # token-weighted aggregate coverage (nonpunct tokens), NOT an
+            # average of per-document ratios
+            agg["judge_valid_token_coverage"] = (
+                round(tot["valid_matched_tokens"] / tot["matched_tokens"], 4)
+                if tot["matched_tokens"] else None)
+        else:
+            cov_a, cov_b, repairs = [], [], 0
+            for it in items:
+                if it.get("emitted_coverage_a") is not None:
+                    cov_a.append(it["emitted_coverage_a"])
+                if it.get("emitted_coverage_b") is not None:
+                    cov_b.append(it["emitted_coverage_b"])
+                repairs += it.get("repairs") or 0
+            agg["emitted_coverage_a"] = (
+                round(sum(cov_a) / len(cov_a), 4) if cov_a else None)
+            agg["emitted_coverage_b"] = (
+                round(sum(cov_b) / len(cov_b), 4) if cov_b else None)
+            agg["repairs"] = repairs
+        out[mode] = agg
+    return out
 
 
 def _dump_eval(r):
@@ -601,8 +721,9 @@ def cmd_pipeline(args) -> int:
         args._budget = ApiBudget(max_requests=args.max_requests,
                                  max_tokens=args.max_tokens)
     args._run_dir = _new_run_dir()
+    halted = None
     for mode in ("splitalign", "baseline"):
-        _predict(args, mode)
+        rc = _predict(args, mode)
         res = evaluate_split(args._run_dir, split,
                              langs=_langs(args.lang),
                              n_resamples=args.bootstrap,
@@ -613,14 +734,24 @@ def cmd_pipeline(args) -> int:
         _m = res['macro_spearman']
         print(f"[{mode}] macro Spearman: "
               + (f"{_m:.4f}" if _m is not None else "null (undefined)"))
+        if rc:
+            halted = getattr(args, "_stop_reason", "stopped")
+            break
+        b = getattr(args, "_budget", None)
+        if b is not None and b.poisoned:
+            halted = f"budget halted: {b.poisoned}"
+            break
+    if halted is not None:
+        print(f"PIPELINE HALTED: {halted} — skipping remaining inference "
+              f"methods (partial artifacts preserved)", file=sys.stderr)
     matched = _matched_eval(args._run_dir, split, _langs(args.lang),
                             args.backend, args.bootstrap)
     mp = args._run_dir / f"eval_matched_{args.backend}_{split.replace('/', '_')}.json"
     mp.write_text(json.dumps(matched, indent=2))
     print(f"matched-ID comparison -> {mp}")
-    # export once, after both modes + matched eval exist in this scope
+    # export once, after the modes that ran + matched eval exist in this scope
     cmd_export_viewer(args)
-    return 0
+    return 1 if halted is not None else 0
 
 
 def cmd_selftest(args) -> int:

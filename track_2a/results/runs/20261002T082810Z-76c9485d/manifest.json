@@ -1,0 +1,69 @@
+{
+  "run_id": "20261002T082810Z-76c9485d",
+  "backend": "apertus",
+  "split": "dev/val",
+  "started_utc": "2026-10-02T08:28:10Z",
+  "modes": {
+    "splitalign": {
+      "intended_ids": {
+        "de": [
+          "admin_de_17"
+        ],
+        "fr": [
+          "admin_fr_17"
+        ],
+        "it": [
+          "admin_it_17"
+        ]
+      },
+      "n_intended": 3
+    },
+    "baseline": {
+      "intended_ids": {
+        "de": [
+          "admin_de_17"
+        ],
+        "fr": [
+          "admin_fr_17"
+        ],
+        "it": [
+          "admin_it_17"
+        ]
+      },
+      "n_intended": 3
+    }
+  },
+  "note": "intended IDs declared before inference; compare methods only on identical produced IDs; a mode missing from 'modes' never ran in this scope",
+  "source": {
+    "commit": "1a440d3966208be794047cf2f42147f19a5e4fe9",
+    "dirty": false,
+    "note": null
+  },
+  "splitalign_version": "0.1.0",
+  "prompt_version": "splitalign-prompts-v2-lang",
+  "gold_sha256": {
+    "de": "0beecfe0b8e43a538951c6d8e21f8970771cf4e7d1e8ffb3b723dad3349276ee",
+    "fr": "dc87a394bd33353d39e77019d1646e7a416368dd46f855615cb208a232872885",
+    "it": "6b9826db9919fe383cecbc09ff355e51aacb6cef1145d5001c03f0f6ab0da9bb"
+  },
+  "score_config": {
+    "diff_a": 1.0,
+    "diff_b": 0.0,
+    "span_boost": 0.25,
+    "span_floor": 0.6,
+    "omit_label": 0.9,
+    "add_label": 0.9,
+    "fallback_scale": 1.0,
+    "boilerplate_cap": 1.0
+  },
+  "cli": {
+    "limit": 1,
+    "offset": 0,
+    "seed": 0,
+    "max_requests": 100,
+    "max_tokens": 70000,
+    "cfg": null,
+    "bootstrap": 0,
+    "require_full": false
+  }
+}

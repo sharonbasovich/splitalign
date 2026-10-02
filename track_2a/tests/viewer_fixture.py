@@ -38,11 +38,15 @@ def evidence() -> dict:
         "segments_b": [{"index": 0, "start": 0, "end": 9,
                         "text": "Der Rat hat das Budget am Dienstag genehmigt ."}],
         "ops": [{"op": "1:1", "a_start": 0, "a_end": 1, "b_start": 0, "b_end": 1}],
-        "judgments": [{"difference": 2, "spans_a": ["Monday"], "spans_b": ["Dienstag"],
+        "judgments": [{"a_ids": [6], "b_ids": [6],
                        "ok": True, "repairs": 0, "cached": False, "lang_b": "de"}],
         "judge_lang": "de",
-        "stats": {"parse_failures": 0, "repairs": 0, "span_matched": 2,
-                  "span_unmatched": 0, "ops": 1, "unparseable_similarity": 0},
+        "stats": {"parse_failures": 0, "repairs": 0, "ops": 1,
+                  "unparseable_similarity": 0, "flagged_a": 1, "flagged_b": 1,
+                  "dropped_punct_ids": 0, "invalid_pairs": 0,
+                  "invalid_fallback_tokens": 0, "sim_unknown_cells": 0,
+                  "sim_imputed_cells": 0, "ops_touching_unknown": 0,
+                  "judge_valid_token_coverage": 1.0},
         "provenance": prov,
     }
     failed_item = {"id": "fixture_fr_1", "lang": "fr", "failed": True,
@@ -107,7 +111,7 @@ def evidence() -> dict:
 def build(dest: Path) -> Path:
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    for name in ("index.html", "style.css", "app.js"):
+    for name in ("index.html", "style.css", "schema.js", "app.js"):
         shutil.copy2(TRACK / "viewer" / name, dest / name)
     (dest / "evidence.js").write_text(
         "window.EVIDENCE = " + json.dumps(evidence(), ensure_ascii=False,

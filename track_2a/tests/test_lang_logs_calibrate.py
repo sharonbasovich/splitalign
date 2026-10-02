@@ -70,7 +70,7 @@ def test_lang_reaches_every_judge_prompt_via_cli_pipeline(mock_env, monkeypatch)
                 assert j["lang_b"] == det["lang"]
         seen.add(det["lang"])
     assert seen == {"de", "fr", "it"}
-    judge_calls = [c for c in calls if '"kind": "judge_pair"' in c[-1]["content"]]
+    judge_calls = [c for c in calls if '"kind": "judge_tag"' in c[-1]["content"]]
     assert judge_calls
     by_lang = {l: 0 for l in LANG_NAME}
     for msgs in judge_calls:
@@ -162,7 +162,7 @@ def test_calibrate_apertus_fails_closed_before_any_client(mock_env, monkeypatch)
 def test_calibrate_mock_passes_lang_and_tags_log(mock_env, monkeypatch):
     calls = _spy_mock(monkeypatch)
     assert _run.cmd_calibrate(_args(backend="mock", lang="fr", limit=1)) == 0
-    judge_calls = [c for c in calls if '"kind": "judge_pair"' in c[-1]["content"]]
+    judge_calls = [c for c in calls if '"kind": "judge_tag"' in c[-1]["content"]]
     assert judge_calls and all("French" in c[0]["content"] for c in judge_calls)
     recs = [json.loads(l) for l in
             (mock_env / "results" / "calls.jsonl").read_text().splitlines()]

@@ -45,6 +45,10 @@ def pipeline_env(tmp_path, monkeypatch):
     monkeypatch.setenv("APERTUS_API_BASE", "http://fake.local/v1")
     monkeypatch.setenv("APERTUS_MODEL", "fake-model")
     monkeypatch.setenv("APERTUS_RPS", "0")
+    monkeypatch.setenv("APERTUS_BOUND_SPEC_JSON", json.dumps(
+        {"per_message_tokens": 8, "request_overhead_tokens": 256,
+         "provenance": "test fixture — conservative allowance",
+         "provider": "test", "model": "fake-model"}))
     monkeypatch.setattr(_ap.time, "sleep", lambda *_: None)
     return out
 
@@ -76,30 +80,42 @@ def test_second_method_cannot_reset_budget(pipeline_env, monkeypatch):
     assert len(run_dirs) == 1
     rd = run_dirs[0]
     man = json.loads((rd / "manifest.json").read_text())
-    # both modes declared intended IDs in ONE manifest
-    assert set(man["modes"]) == {"splitalign", "baseline"}
-    for mode in ("splitalign", "baseline"):
-        s = json.loads((rd / f"run_summary_{mode}_apertus_dev_val.json")
-                       .read_text())
-        assert s["budget_capped"], f"{mode} must report the cap honestly"
-        assert s["new_api_requests"] == budget.requests  # shared counter
+    # splitalign exhausted the shared cap -> pipeline halted -> baseline
+    # was SKIPPED: it never declared intent in this scope at all
+    assert set(man["modes"]) == {"splitalign"}
+    s = json.loads((rd / "run_summary_splitalign_apertus_dev_val.json")
+                   .read_text())
+    assert s["budget_capped"], "splitalign must report the cap honestly"
+    assert s["new_api_requests"] == budget.requests
+    assert not (rd / "run_summary_baseline_apertus_dev_val.json").exists()
+    assert not (rd / "details_baseline_apertus_dev_val.json").exists()
     # matched-ID eval file exists in the same immutable scope
     assert (rd / "eval_matched_apertus_dev_val.json").exists()
 
 
-def test_retry_storm_consumes_shared_cap(pipeline_env, monkeypatch):
-    """A 429 storm: retries burn the shared budget; run stops cleanly."""
+def test_429_poisons_shared_budget_pipeline_halts(pipeline_env, monkeypatch):
+    """First splitalign request 429s: ONE transport call total — the
+    poisoned shared budget lets baseline dispatch nothing, cmd_pipeline
+    returns nonzero, partial artifacts are preserved."""
+    calls = []
     def boom(*a, **k):
+        calls.append(1)
         raise urllib.error.HTTPError("u", 429, "", {}, io.BytesIO(b"x"))
     monkeypatch.setattr(_ap.urllib.request, "urlopen", boom)
-    args = _args(max_requests=3)
-    _run.cmd_pipeline(args)
-    assert args._budget.requests == 3      # retries counted at the boundary
+    args = _args(max_requests=10**9)
+    assert _run.cmd_pipeline(args) == 1          # nonzero: halted
+    assert calls == [1]                          # only ONE transport call
+    assert args._budget.requests == 1
+    assert args._budget.attempts_no_usage == 1
+    assert args._budget.poisoned                 # halt latch set
     rd = next((_run.RESULTS_DIR / "runs").iterdir())
     s = json.loads((rd / "run_summary_splitalign_apertus_dev_val.json")
                    .read_text())
-    assert "request cap" in s["budget_capped"]
-    assert s["attempts_without_usage"] == 3   # unknown token cost disclosed
+    assert s["budget_capped"] and "UNKNOWN" in s["budget_capped"]
+    assert s["attempts_without_usage"] == 1 and s["budget_halted"]
+    # baseline method was SKIPPED — no inference ran for it at all
+    assert not (rd / "run_summary_baseline_apertus_dev_val.json").exists()
+    assert not (rd / "details_baseline_apertus_dev_val.json").exists()
 
 
 def test_runs_do_not_mix(pipeline_env, monkeypatch):
@@ -158,23 +174,24 @@ def test_lang_all_cap_before_first_item(pipeline_env, monkeypatch):
     monkeypatch.setattr(_ap.urllib.request, "urlopen",
                         lambda *a, **k: _FakeResp())
     args = _args(lang="all", max_requests=0)
-    _run.cmd_pipeline(args)
+    assert _run.cmd_pipeline(args) == 1
     rd = next((_run.RESULTS_DIR / "runs").iterdir())
-    man, m = _assert_truthful_scope(rd)
-    for mode in ("splitalign", "baseline"):
-        s = _strict(rd / f"run_summary_{mode}_apertus_dev_val.json")
-        assert s["n_completed"] == 0 and s["budget_capped"]
-        assert s["lang_status"] == {"de": "started_no_output",
-                                    "fr": "not_started", "it": "not_started"}
-        e = _strict(rd / f"eval_{mode}_apertus_dev_val.json")
-        assert e["macro_spearman"] is None and e["macro_spearman_invalid_reason"]
+    man, m = _assert_truthful_scope(rd, modes=("splitalign",))
+    s = _strict(rd / "run_summary_splitalign_apertus_dev_val.json")
+    assert s["n_completed"] == 0 and s["budget_capped"]
+    assert s["lang_status"] == {"de": "started_no_output",
+                                "fr": "not_started", "it": "not_started"}
+    e = _strict(rd / "eval_splitalign_apertus_dev_val.json")
+    assert e["macro_spearman"] is None and e["macro_spearman_invalid_reason"]
+    # baseline skipped entirely — nothing ran for it
+    assert not (rd / "run_summary_baseline_apertus_dev_val.json").exists()
     assert m["macro_matched"] == {"splitalign": None, "baseline": None}
     assert args._budget.requests == 0
     ev = _run.EVIDENCE_PATH.read_text()
     assert "NaN" not in ev
     evj = json.loads(ev[ev.index("{"):].rstrip().rstrip(";"))
     assert evj["run"]["run_id"] == rd.name and evj["run"]["partial"] is True
-    assert evj["run"]["modes"]["baseline"]["budget_capped"]
+    assert evj["run"]["modes"]["splitalign"]["budget_capped"]
 
 
 def test_lang_all_cap_mid_first_language(pipeline_env, monkeypatch):
@@ -191,10 +208,12 @@ def test_lang_all_cap_mid_first_language(pipeline_env, monkeypatch):
         for f in d.iterdir():
             f.unlink()
         d.rmdir()
+    import shutil
+    shutil.rmtree(_run.RESULTS_DIR / "cache", ignore_errors=True)
     args = _args(lang="all", limit=2, max_requests=per_item + 1)
-    _run.cmd_pipeline(args)
+    assert _run.cmd_pipeline(args) == 1
     rd = next((_run.RESULTS_DIR / "runs").iterdir())
-    _assert_truthful_scope(rd)
+    _assert_truthful_scope(rd, modes=("splitalign",))
     sa = _strict(rd / "run_summary_splitalign_apertus_dev_val.json")
     assert sa["lang_status"]["de"] == "partial"
     assert sa["completed_ids"]["de"] and len(sa["remaining_ids"]["de"]) == 1
@@ -202,12 +221,10 @@ def test_lang_all_cap_mid_first_language(pipeline_env, monkeypatch):
     assert sa["lang_status"]["it"] == "not_started"
     assert sum(1 for _ in (rd / "splitalign_apertus_admin_de.jsonl").open()) == 1
     assert not (rd / "splitalign_apertus_admin_fr.jsonl").exists()
-    bl = _strict(rd / "run_summary_baseline_apertus_dev_val.json")
-    assert bl["budget_capped"] and bl["n_completed"] == 0
-    assert bl["lang_status"] == {"de": "started_no_output",
-                                 "fr": "not_started", "it": "not_started"}
-    assert sa["new_api_requests"] == bl["new_api_requests"] == per_item + 1
-    assert args._budget.requests == per_item + 1  # retries would count too
+    # baseline skipped entirely after the cap halt
+    assert not (rd / "run_summary_baseline_apertus_dev_val.json").exists()
+    assert sa["new_api_requests"] == per_item + 1
+    assert args._budget.requests == per_item + 1
 
 
 def test_lang_all_cap_mid_second_language(pipeline_env, monkeypatch):
@@ -221,10 +238,12 @@ def test_lang_all_cap_mid_second_language(pipeline_env, monkeypatch):
         for f in d.iterdir():
             f.unlink()
         d.rmdir()
+    import shutil
+    shutil.rmtree(_run.RESULTS_DIR / "cache", ignore_errors=True)
     args = _args(lang="all", limit=1, max_requests=per_de + 1)
-    _run.cmd_pipeline(args)
+    assert _run.cmd_pipeline(args) == 1
     rd = next((_run.RESULTS_DIR / "runs").iterdir())
-    _assert_truthful_scope(rd)
+    _assert_truthful_scope(rd, modes=("splitalign",))
     sa = _strict(rd / "run_summary_splitalign_apertus_dev_val.json")
     assert sa["lang_status"]["de"] == "complete"
     assert sa["lang_status"]["fr"] in ("partial", "started_no_output")
@@ -234,32 +253,32 @@ def test_lang_all_cap_mid_second_language(pipeline_env, monkeypatch):
     assert e["macro_spearman"] is None          # strict: fr/it undefined
     assert e["per_language"]["de"]["spearman"] is not None or \
         e["per_language"]["de"]["invalid_reason"]
-    bl = _strict(rd / "run_summary_baseline_apertus_dev_val.json")
-    assert bl["budget_capped"] and bl["n_completed"] == 0
+    # baseline skipped entirely after the halt
+    assert not (rd / "run_summary_baseline_apertus_dev_val.json").exists()
     m = _strict(rd / "eval_matched_apertus_dev_val.json")
     assert all(v["n_matched"] == 0 for v in m["per_language"].values())
 
 
-def test_lang_all_retry_storm_zero_outputs(pipeline_env, monkeypatch):
-    """500 storm with a large cap: every item fails, every language of both
-    methods is started_no_output, attempts (incl. retries) are counted."""
+def test_lang_all_500_halts_run_fail_closed(pipeline_env, monkeypatch):
+    """A 500 is an unknown-cost attempt: ONE dispatch total, budget
+    poisoned, baseline skipped entirely, run returns nonzero."""
+    calls = []
     def boom(*a, **k):
+        calls.append(1)
         raise urllib.error.HTTPError("u", 500, "", {}, io.BytesIO(b"x"))
     monkeypatch.setattr(_ap.urllib.request, "urlopen", boom)
     args = _args(lang="all", limit=1, max_requests=10**9)
-    _run.cmd_pipeline(args)
+    assert _run.cmd_pipeline(args) == 1
+    assert calls == [1]                          # exactly one transport call
     rd = next((_run.RESULTS_DIR / "runs").iterdir())
-    _assert_truthful_scope(rd)
-    for mode in ("splitalign", "baseline"):
-        s = _strict(rd / f"run_summary_{mode}_apertus_dev_val.json")
-        assert s["n_completed"] == 0 and not s.get("budget_capped")
-        assert set(s["lang_status"].values()) == {"started_no_output"}
-        assert s["attempts_without_usage"] == s["new_api_requests"] > 0
-        e = _strict(rd / f"eval_{mode}_apertus_dev_val.json")
-        assert all(v["invalid_reason"] == "no matched predictions"
-                   for v in e["per_language"].values())
-    # retries counted: more attempts than logical calls
-    assert args._budget.requests > args._budget.logical_calls > 0
+    _assert_truthful_scope(rd, modes=("splitalign",))
+    sa = _strict(rd / "run_summary_splitalign_apertus_dev_val.json")
+    assert sa["n_completed"] == 0 and sa["budget_capped"]
+    assert sa["lang_status"] == {"de": "started_no_output",
+                               "fr": "not_started", "it": "not_started"}
+    assert sa["attempts_without_usage"] == 1 and sa["budget_halted"]
+    assert not (rd / "run_summary_baseline_apertus_dev_val.json").exists()
+    assert args._budget.requests == 1 and args._budget.attempts_no_usage == 1
 
 
 def test_export_viewer_requires_explicit_run(pipeline_env, monkeypatch):
@@ -281,3 +300,39 @@ def test_export_viewer_requires_explicit_run(pipeline_env, monkeypatch):
     assert evj["run"]["modes_intended_not_produced"] == []
     assert evj["run"]["matched"]["n_matched"] == {"de": 1}
     assert evj["run"]["source"] is not None
+
+
+def test_missing_bound_config_sends_zero(pipeline_env, monkeypatch):
+    """No APERTUS_BOUND_SPEC_JSON => BoundNotConfigured before dispatch:
+    ZERO transport calls, pipeline halts nonzero, honest summary."""
+    monkeypatch.delenv("APERTUS_BOUND_SPEC_JSON")
+    calls = []
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: calls.append(1) or _FakeResp())
+    args = _args(max_requests=10**9)
+    assert _run.cmd_pipeline(args) == 1
+    assert calls == []                         # nothing ever left the box
+    assert args._budget.requests == 0
+    rd = next((_run.RESULTS_DIR / "runs").iterdir())
+    s = _strict(rd / "run_summary_splitalign_apertus_dev_val.json")
+    assert "bound" in s["budget_capped"].lower() or \
+        "bound" in s["budget_capped"]
+    assert not (rd / "run_summary_baseline_apertus_dev_val.json").exists()
+
+
+def test_second_method_blocked_by_poisoned_budget(pipeline_env, monkeypatch):
+    """End-to-end poison: splitalign's first request URLErrors; a mocked
+    success IS available for baseline — it must never be dispatched."""
+    calls = []
+    def first_only(*a, **k):
+        calls.append(1)
+        if len(calls) == 1:
+            raise urllib.error.URLError("network down")
+        return _FakeResp()                  # would succeed — must not run
+    monkeypatch.setattr(_ap.urllib.request, "urlopen", first_only)
+    args = _args(max_requests=10**9)
+    assert _run.cmd_pipeline(args) == 1
+    assert calls == [1]                      # exactly ONE transport call
+    assert args._budget.poisoned
+    assert not (next((_run.RESULTS_DIR / "runs").iterdir())
+                / "run_summary_baseline_apertus_dev_val.json").exists()

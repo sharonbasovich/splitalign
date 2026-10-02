@@ -1,12 +1,16 @@
 """Map aligned-pair judgments back onto the official token arrays.
 
-* ``1:1``/``1:2`` pairs: every covered token gets base = difference/5 (or the
-  calibrated linear map), boosted where the model reported verbatim differing
-  spans; asymmetric content inside the pair is therefore explicit.
+* ``1:1``/``1:2`` pairs (v3-tag): tokens the judge flagged by INDEX get
+  label 1.0, every other covered token gets 0.0 — localization is the
+  judge's own token-level output, not a uniform per-pair score. Flagged
+  punctuation indices are dropped and counted (official -1 convention
+  applies to them regardless).
 * ``1:0`` (omitted) / ``0:1`` (added): covered tokens get the calibrated
   asymmetric label — additions/omissions are represented, not dropped.
 * Punctuation tokens are always -1 (official convention).
-* Failed judgments fall back to a similarity-derived score and are counted.
+* Judgments invalid after the bounded repair fall back to a DECLARED
+  score of 0 for every covered token and are counted (``invalid_pairs``,
+  ``invalid_fallback_tokens``) — never reported as emitted/valid coverage.
 """
 from __future__ import annotations
 
@@ -14,7 +18,7 @@ import bisect
 from dataclasses import dataclass, field
 
 from .align import AlignOp, OP_ADD, OP_MATCH, OP_OMIT, OP_SPLIT
-from .judge import Judgment
+from .judge import Judgment, TagJudgment
 from .segment import Segment, Token, is_punctuation
 
 
@@ -33,11 +37,19 @@ class ScoreConfig:
 
 @dataclass
 class ScoreStats:
-    parse_failures: int = 0
+    parse_failures: int = 0        # legacy field: v3 counts invalid_pairs
     repairs: int = 0
     span_unmatched: int = 0        # spans the model emitted but we could not place
     span_matched: int = 0
     ops: dict = field(default_factory=dict)
+    # v3-tag accounting
+    flagged_a: int = 0             # valid flagged token labels (score 1.0)
+    flagged_b: int = 0
+    dropped_punct_ids: int = 0     # flagged indices dropped as punctuation
+    invalid_pairs: int = 0         # pairs invalid after bounded repair
+    invalid_fallback_tokens: int = 0   # tokens under the score-0 fallback
+    matched_tokens: int = 0        # tokens covered by matched ops
+    valid_matched_tokens: int = 0  # matched tokens under a VALID judgment
 
 
 def map_span_to_token_range(text: str, tokens: list[Token], span: str,
@@ -78,6 +90,9 @@ def score_item(tokens_a: list[Token], tokens_b: list[Token],
     labels_b = [0.0] * len(tokens_b)
     seen_a = [False] * len(tokens_a)
     seen_b = [False] * len(tokens_b)
+    matched_idx: set = set()   # side-keyed: a indices raw, b indices + len(tokens_a)
+    valid_idx: set = set()
+    invalid_idx: set = set()
 
     for op, jud in zip(ops, judgments):
         stats.ops[op.op] = stats.ops.get(op.op, 0) + 1
@@ -95,21 +110,41 @@ def score_item(tokens_a: list[Token], tokens_b: list[Token],
                 seen_b[t] = True
             continue
 
-        # matched pair (1:1 or 1:2)
-        if jud is None or not jud.ok:
+        # matched pair (1:1, 1:2, 2:1) — v3-tag indexed judgment
+        # coverage counts NON-PUNCTUATION tokens only (official exclusion)
+        matched_idx.update(i for i in a_tok_idx
+                           if not is_punctuation(tokens_a[i].text))
+        matched_idx.update(len(tokens_a) + i for i in b_tok_idx
+                           if not is_punctuation(tokens_b[i].text))
+        if not isinstance(jud, TagJudgment) or not jud.ok:
+            # declared score-0 fallback — counted, never emitted coverage
             stats.parse_failures += 1
-            base = min(1.0, (1.0 - op.sim) * cfg.fallback_scale)
-            d_norm = base
-            spans_a = spans_b = []
-        else:
-            stats.repairs += jud.repairs
-            d_norm = max(0.0, min(1.0, cfg.diff_a * (jud.difference / 5.0) + cfg.diff_b))
-            spans_a, spans_b = jud.spans_a, jud.spans_b
+            stats.invalid_pairs += 1
+            invalid_idx.update(i for i in a_tok_idx
+                               if not is_punctuation(tokens_a[i].text))
+            invalid_idx.update(len(tokens_a) + i for i in b_tok_idx
+                               if not is_punctuation(tokens_b[i].text))
+            for t in a_tok_idx:
+                labels_a[t] = 0.0
+                seen_a[t] = True
+            for t in b_tok_idx:
+                labels_b[t] = 0.0
+                seen_b[t] = True
+            continue
 
-        _apply(labels_a, seen_a, tokens_a, text_a, a_tok_idx,
-               d_norm, spans_a, cfg, stats, "a")
-        _apply(labels_b, seen_b, tokens_b, text_b, b_tok_idx,
-               d_norm, spans_b, cfg, stats, "b")
+        stats.repairs += jud.repairs
+        valid_idx.update(i for i in a_tok_idx
+                         if not is_punctuation(tokens_a[i].text))
+        valid_idx.update(len(tokens_a) + i for i in b_tok_idx
+                         if not is_punctuation(tokens_b[i].text))
+        _apply_tags(labels_a, seen_a, tokens_a, a_tok_idx, jud.a_ids, stats,
+                    "flagged_a")
+        _apply_tags(labels_b, seen_b, tokens_b, b_tok_idx, jud.b_ids, stats,
+                    "flagged_b")
+
+    stats.matched_tokens = len(matched_idx)
+    stats.valid_matched_tokens = len(valid_idx)
+    stats.invalid_fallback_tokens = len(invalid_idx - valid_idx)
 
     # punctuation convention: -1 everywhere (mirrors official preprocessing)
     for i, t in enumerate(tokens_a):
@@ -137,6 +172,28 @@ def _seg_token_range(segs: list[Segment], lo: int, hi: int) -> list[int]:
     for s in segs[lo:hi]:
         out.extend(range(s.start_token, s.end_token))
     return out
+
+
+def _apply_tags(labels, seen, tokens, tok_idx, ids, stats, field_name):
+    """v3-tag: flagged local indices -> 1.0, all other covered tokens -> 0.0.
+
+    Flagged punctuation indices are dropped and counted — the official -1
+    convention owns them regardless of what the model returned.
+    """
+    flagged = set()
+    for i in ids:
+        tok = tokens[tok_idx[i]]
+        if is_punctuation(tok.text):
+            stats.dropped_punct_ids += 1
+            continue
+        flagged.add(i)
+    for pos, t in enumerate(tok_idx):
+        if pos in flagged:
+            labels[t] = 1.0
+            setattr(stats, field_name, getattr(stats, field_name) + 1)
+        else:
+            labels[t] = 0.0
+        seen[t] = True
 
 
 def _apply(labels, seen, tokens, text, tok_idx, base, spans, cfg, stats, side):

@@ -1,5 +1,5 @@
 from splitalign.align import AlignOp
-from splitalign.judge import Judgment
+from splitalign.judge import TagJudgment
 from splitalign.score import ScoreConfig, map_span_to_token_range, score_item
 from splitalign.segment import segment_text
 
@@ -19,14 +19,29 @@ def test_span_mapping_repeated_tokens():
     assert rng == (4, 5)
 
 
-def test_score_basic_ops():
+def test_score_tag_flagged_tokens():
+    ta, sa = _doc("One two three .")
+    tb, sb = _doc("Uno dos tres .")
+    ops = [AlignOp("1:1", 0, 1, 0, 1, 0.9)]
+    j = TagJudgment(a_ids=[0], b_ids=[1, 2])
+    la, lb, st = score_item(ta, tb, sa, sb, "One two three .",
+                            "Uno dos tres .", ops, [j])
+    assert la == [1.0, 0.0, 0.0, -1.0]
+    assert lb == [0.0, 1.0, 1.0, -1.0]
+    assert st.flagged_a == 1 and st.flagged_b == 2
+    assert st.valid_matched_tokens == 6 and st.matched_tokens == 6  # nonpunct only
+    assert st.invalid_pairs == 0
+
+
+def test_score_empty_tags_all_zero():
     ta, sa = _doc("One two .")
     tb, sb = _doc("Uno dos .")
     ops = [AlignOp("1:1", 0, 1, 0, 1, 0.9)]
-    j = Judgment(difference=1, spans_a=[], spans_b=[])
+    j = TagJudgment(a_ids=[], b_ids=[])
     la, lb, st = score_item(ta, tb, sa, sb, "One two .", "Uno dos .", ops, [j])
-    assert la == [0.2, 0.2, -1.0]
-    assert lb == [0.2, 0.2, -1.0]
+    assert la == [0.0, 0.0, -1.0]
+    assert lb == [0.0, 0.0, -1.0]
+    assert st.flagged_a == 0 and st.flagged_b == 0
 
 
 def test_score_omit_add():
@@ -39,26 +54,39 @@ def test_score_omit_add():
     assert lb[0] == 0.8 and lb[1] == -1.0
 
 
-def test_score_span_boost():
-    text_a = "alpha beta gamma ."
-    text_b = "alpha beta delta ."
-    ta, sa = _doc(text_a)
-    tb, sb = _doc(text_b)
+def test_punct_ids_dropped_and_counted():
+    ta, sa = _doc("a , b .")
+    tb, sb = _doc("c d .")
     ops = [AlignOp("1:1", 0, 1, 0, 1, 0.9)]
-    j = Judgment(difference=2, spans_a=["gamma"], spans_b=["delta"])
-    la, lb, st = score_item(ta, tb, sa, sb, text_a, text_b, ops, [j],
-                            ScoreConfig(span_boost=0.3, span_floor=0.6))
-    assert la[0] == la[1] == 0.4  # base = 2/5
-    assert la[2] == 0.7           # boosted
-    assert lb[2] == 0.7
-    assert st.span_matched == 2
+    # "," is index 1 and "." index 3 in a — flagged punct ids must drop, count
+    j = TagJudgment(a_ids=[0, 1, 3], b_ids=[2])
+    la, lb, st = score_item(ta, tb, sa, sb, "a , b .", "c d .", ops, [j])
+    assert la == [1.0, -1.0, 0.0, -1.0]
+    assert lb == [0.0, 0.0, -1.0]
+    assert st.dropped_punct_ids == 3
+    assert st.flagged_a == 1
 
 
-def test_failed_judgment_falls_back():
+def test_invalid_judgment_score0_fallback():
     ta, sa = _doc("a b .")
     tb, sb = _doc("c d .")
     ops = [AlignOp("1:1", 0, 1, 0, 1, 0.2)]
-    j = Judgment(difference=-1, spans_a=[], spans_b=[], ok=False)
+    j = TagJudgment(a_ids=[], b_ids=[], ok=False, repairs=1)
     la, lb, st = score_item(ta, tb, sa, sb, "a b .", "c d .", ops, [j])
-    assert st.parse_failures == 1
-    assert abs(la[0] - 0.8) < 1e-6  # (1-sim)*scale
+    assert st.parse_failures == 1 and st.invalid_pairs == 1
+    assert st.invalid_fallback_tokens == 4  # nonpunct only
+    assert la[:2] == [0.0, 0.0] and lb[:2] == [0.0, 0.0]
+    assert st.valid_matched_tokens == 0 and st.matched_tokens == 4
+
+
+def test_judge_valid_token_coverage_mix():
+    ta, sa = _doc("a b . x y .")
+    tb, sb = _doc("c d . u v .")
+    ops = [AlignOp("1:1", 0, 1, 0, 1, 0.9), AlignOp("1:1", 1, 2, 1, 2, 0.9)]
+    js = [TagJudgment(a_ids=[], b_ids=[0]),
+          TagJudgment(a_ids=[], b_ids=[], ok=False)]
+    la, lb, st = score_item(ta, tb, sa, sb, "a b . x y .", "c d . u v .",
+                            ops, js)
+    # unique nonpunct accounting: 4 valid, 4 under declared fallback
+    assert st.valid_matched_tokens == 4 and st.matched_tokens == 8
+    assert st.invalid_pairs == 1 and st.invalid_fallback_tokens == 4
