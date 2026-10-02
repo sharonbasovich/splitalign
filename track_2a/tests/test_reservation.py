@@ -14,7 +14,8 @@ import urllib.error
 import pytest
 
 from splitalign.apertus import (ApertusClient, ApiBudget, ApertusUnavailable,
-                                BudgetExceeded)
+                                BoundNotConfigured, BudgetExceeded,
+                                TokenBoundSpec)
 from splitalign import apertus as _ap
 
 
@@ -41,14 +42,19 @@ def _ok_resp(pt=10, ct=5):
         "usage": {"prompt_tokens": pt, "completion_tokens": ct}}))
 
 
-def _client(budget):
-    c = ApertusClient("http://fake", "k", "m", rps=0)
+TEST_SPEC = TokenBoundSpec(per_message_tokens=8, request_overhead_tokens=256,
+                           provenance="test fixture — conservative allowance",
+                           provider="test", model="m")
+
+
+def _client(budget, spec=TEST_SPEC):
+    c = ApertusClient("http://fake", "k", "m", rps=0, bound_spec=spec)
     c.budget = budget
     return c
 
 
 MSG = [{"role": "user", "content": "a"}]
-BOUND = ApertusClient._prompt_token_bound(MSG)   # 1 byte + 256 = 257
+BOUND = 256 + 8 + len("a".encode("utf-8"))       # request + per-msg + bytes
 
 
 @pytest.fixture
@@ -259,3 +265,87 @@ def test_viewer_schema_node_tests():
     p = _repo_results().parent / "tests" / "viewer_schema_test.mjs"
     r = subprocess.run([node, str(p)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
+
+
+# -- poison / bound-violation / missing-config (audit findings) -------------
+
+def test_poisoned_budget_blocks_new_client(no_sleep, monkeypatch):
+    """A NEW client sharing a poisoned budget can never dispatch — the
+    halt latch is on the budget object, not the client."""
+    calls = []
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: calls.append(1) or _ok_resp())
+    b = ApiBudget(max_requests=10**9, max_tokens=10**9)
+    b.poison("unknown-cost attempt")
+    c2 = ApertusClient("http://fake", "k", "m", rps=0, bound_spec=TEST_SPEC)
+    c2.budget = b
+    with pytest.raises(BudgetExceeded, match="halted"):
+        c2.complete(MSG, max_tokens=0)
+    assert calls == []                       # zero transport calls
+
+
+def test_fail_unknown_poisons_budget(no_sleep, monkeypatch):
+    """fail_unknown both counts the attempt AND latches the halt."""
+    b = ApiBudget(max_requests=10**9, max_tokens=10**9)
+    b.fail_unknown("HTTP 500")
+    assert b.attempts_no_usage == 1 and b.poisoned == "HTTP 500"
+    with pytest.raises(BudgetExceeded):
+        b.reserve(1)
+
+
+@pytest.mark.parametrize("cap_headroom", [0, 10**6])
+def test_usage_over_reserved_poisons_and_halts(no_sleep, monkeypatch,
+                                               cap_headroom):
+    """Provider reports MORE usage than the reserved bound — whether the
+    total stays under the run cap (headroom>0) or blows through it
+    (headroom=0): actual usage is recorded IN FULL (never clipped), the
+    violation is flagged, the budget is poisoned and the call halts.
+    A bound is conditional, not a guarantee."""
+    calls = []
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: calls.append(1) or _ok_resp(1000, 1))
+    bound = BOUND + 1            # max_tokens=1 -> reservation = bound+1
+    b = ApiBudget(max_requests=10**9, max_tokens=bound + cap_headroom)
+    c = _client(b)
+    with pytest.raises(ApertusUnavailable, match="bound"):
+        c.complete(MSG, max_tokens=1)
+    assert len(calls) == 1 and b.requests == 1
+    assert b.measured_tokens == 1001         # honest, unclipped actual
+    assert b.bound_violations == 1 and b.poisoned
+    # no second dispatch possible
+    with pytest.raises(BudgetExceeded):
+        c.complete(MSG, max_tokens=1)
+    assert len(calls) == 1
+
+
+def test_missing_bound_spec_blocks_all_dispatch(no_sleep, monkeypatch):
+    """NO configured token-bound spec => BoundNotConfigured BEFORE any
+    bytes leave — zero transport calls even with a working endpoint."""
+    calls = []
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: calls.append(1) or _ok_resp())
+    b = ApiBudget(max_requests=10**9, max_tokens=10**9)
+    c = _client(b, spec=None)                # unconfigured bound
+    with pytest.raises(BoundNotConfigured):
+        c.complete(MSG)
+    assert calls == [] and b.requests == 0   # never even reserved
+
+
+def test_wrong_model_bound_spec_blocks_dispatch(no_sleep, monkeypatch):
+    calls = []
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: calls.append(1) or _ok_resp())
+    spec = TokenBoundSpec(per_message_tokens=8, request_overhead_tokens=256,
+                          provenance="for another model", model="other-model")
+    with pytest.raises(BoundNotConfigured, match="model"):
+        _client(None, spec=spec).complete(MSG)
+    assert calls == []
+
+
+def test_nonstring_content_blocks_dispatch(no_sleep, monkeypatch):
+    calls = []
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: calls.append(1) or _ok_resp())
+    with pytest.raises(BoundNotConfigured):
+        _client(None).complete([{"role": "user", "content": [{"type": "t"}]}])
+    assert calls == []

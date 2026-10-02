@@ -27,7 +27,8 @@ from pathlib import Path
 
 from . import METHOD_VERSIONS, PROMPT_VERSION, PROMPT_VERSION_BY_KIND, __version__, guard
 from .align import AlignConfig
-from .apertus import (ApiBudget, ApertusUnavailable, BudgetExceeded,
+from .apertus import (ApiBudget, ApertusUnavailable, BoundNotConfigured,
+                      BudgetExceeded,
                       MissingCredentials)
 from .evaluate import _dump, evaluate_predictions, evaluate_split
 from .fetch_data import ALLOWLIST, fetch, load_gold_items, write_manifest
@@ -252,9 +253,10 @@ def _predict(args, mode: str) -> int:
                 for r in recs:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             print(f"wrote {len(recs)} predictions -> {path}")
-    except (BudgetExceeded, ApertusUnavailable) as e:
-        # hard cap hit mid-item OR unknown-cost attempt: keep every completed
-        # record, report honestly, halt fail-closed
+    except (BudgetExceeded, BoundNotConfigured, ApertusUnavailable) as e:
+        # cap hit, missing bound config, poisoned budget OR unknown-cost
+        # attempt: keep every completed record, report honestly, halt
+        # fail-closed
         capped = str(e)
         print(f"RUN STOPPED: {capped} — writing partial results",
               file=sys.stderr)
@@ -293,16 +295,22 @@ def _predict(args, mode: str) -> int:
         "tokens_committed": budget.tokens if budget else 0,
         "logical_calls": budget.logical_calls if budget else 0,
         "attempts_without_usage": budget.attempts_no_usage if budget else 0,
+        "bound_violations": budget.bound_violations if budget else 0,
+        "budget_halted": budget.poisoned if budget else None,
         "method_usage": _method_usage(run_dir / "calls.jsonl", mode,
                                       budget),
         "usage_uncertainty_note": (
             f"{budget.attempts_no_usage} dispatched attempt(s) have unknown "
             "token cost; their RESERVED bounds stay committed in "
-            "tokens_committed and are NOT included in tokens_measured"
+            "tokens_committed and are NOT included in tokens_measured; the "
+            "shared budget is poisoned so no later dispatch can occur"
             if budget and budget.attempts_no_usage else None),
-        "overshoot_note": (
-            "every request reserves a verified prompt+completion upper bound "
-            "before dispatch, so committed tokens never exceed the token cap"
+        "token_allowance_note": (
+            "the token allowance is CONDITIONAL on the configured "
+            "conservative bound spec — the request cap is the only "
+            "unconditional limit. Provider usage exceeding a reserved bound "
+            "cannot be undone: it is recorded in full, flagged as a bound "
+            "violation, and halts the run"
             if budget else None),
         "elapsed_s": round(elapsed, 1),
         "caution": ("PARTIAL RUN — do not treat coverage as complete"
@@ -312,7 +320,9 @@ def _predict(args, mode: str) -> int:
     spath.write_text(json.dumps({k: v for k, v in summary.items() if v is not None},
                                 indent=2))
     print(f"run summary -> {spath}")
-    return 0
+    # propagate stopped status so cmd_pipeline skips remaining methods
+    args._stop_reason = capped
+    return 1 if capped else 0
 
 
 def cmd_evaluate(args) -> int:
@@ -703,8 +713,9 @@ def cmd_pipeline(args) -> int:
         args._budget = ApiBudget(max_requests=args.max_requests,
                                  max_tokens=args.max_tokens)
     args._run_dir = _new_run_dir()
+    halted = None
     for mode in ("splitalign", "baseline"):
-        _predict(args, mode)
+        rc = _predict(args, mode)
         res = evaluate_split(args._run_dir, split,
                              langs=_langs(args.lang),
                              n_resamples=args.bootstrap,
@@ -715,14 +726,24 @@ def cmd_pipeline(args) -> int:
         _m = res['macro_spearman']
         print(f"[{mode}] macro Spearman: "
               + (f"{_m:.4f}" if _m is not None else "null (undefined)"))
+        if rc:
+            halted = getattr(args, "_stop_reason", "stopped")
+            break
+        b = getattr(args, "_budget", None)
+        if b is not None and b.poisoned:
+            halted = f"budget halted: {b.poisoned}"
+            break
+    if halted is not None:
+        print(f"PIPELINE HALTED: {halted} — skipping remaining inference "
+              f"methods (partial artifacts preserved)", file=sys.stderr)
     matched = _matched_eval(args._run_dir, split, _langs(args.lang),
                             args.backend, args.bootstrap)
     mp = args._run_dir / f"eval_matched_{args.backend}_{split.replace('/', '_')}.json"
     mp.write_text(json.dumps(matched, indent=2))
     print(f"matched-ID comparison -> {mp}")
-    # export once, after both modes + matched eval exist in this scope
+    # export once, after the modes that ran + matched eval exist in this scope
     cmd_export_viewer(args)
-    return 0
+    return 1 if halted is not None else 0
 
 
 def cmd_selftest(args) -> int:

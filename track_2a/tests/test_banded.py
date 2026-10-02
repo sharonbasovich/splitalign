@@ -68,7 +68,8 @@ import urllib.error
 import json as _json
 import pytest
 from splitalign.apertus import (ApertusClient, ApiBudget, ApertusUnavailable,
-                                BudgetExceeded)
+                                BoundNotConfigured, BudgetExceeded,
+                                TokenBoundSpec)
 from splitalign import apertus as _ap
 
 
@@ -89,8 +90,14 @@ class _FakeResp:
         return False
 
 
+TEST_SPEC = TokenBoundSpec(per_message_tokens=8, request_overhead_tokens=256,
+                           provenance="test fixture — conservative allowance",
+                           provider="test", model="m")
+
+
 def _client(budget, retries=5):
-    c = ApertusClient("http://fake", "k", "m", rps=0, max_retries=retries)
+    c = ApertusClient("http://fake", "k", "m", rps=0, max_retries=retries,
+                      bound_spec=TEST_SPEC)
     c.budget = budget
     return c
 
@@ -118,6 +125,10 @@ def test_429_is_one_attempt_then_halt(no_sleep, monkeypatch):
     # reservation retained: committed tokens stay at the reserved bound
     assert budget.tokens == client._prompt_token_bound(
         [{"role": "user", "content": "hi"}]) + 2048
+    # the attempt also POISONED the budget: no later reserve can dispatch
+    assert budget.poisoned
+    with pytest.raises(BudgetExceeded):
+        client.complete([{"role": "user", "content": "again"}])
 
 
 def test_reserved_bound_blocks_dispatch(no_sleep, monkeypatch):

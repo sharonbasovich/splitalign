@@ -77,7 +77,7 @@ class Judge:
             return hit["text"], True, None
         if self.budget is not None:
             self.budget.logical_calls += 1  # non-cached call; HTTP attempts
-            # are capped inside ApertusClient.complete (retries included)
+            # are reserved/capped inside ApertusClient.complete
         try:
             res = self.client.complete(messages, max_tokens=max_tokens,
                                        temperature=0.0, seed=self.seed)

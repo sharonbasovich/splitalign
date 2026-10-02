@@ -112,7 +112,8 @@ class ApertusClient:
 
     def __init__(self, base: str, key: str, model: str,
                  timeout_s: float = 120.0, rps: float = 2.0,
-                 max_retries: int = 0):
+                 max_retries: int = 0,
+                 bound_spec: "TokenBoundSpec | None" = None):
         self.base = base.rstrip("/")
         self.key = key
         self.model = model
@@ -124,6 +125,10 @@ class ApertusClient:
         # optional shared ApiBudget; set post-construction by the caller so
         # the SAME object governs every attempt across both methods
         self.budget = None
+        # required for ANY dispatch: an explicit conservative prompt-token
+        # bound spec (provider/model/message-format specific, with
+        # provenance). None => every call fails closed before dispatch.
+        self.bound_spec = bound_spec
 
     @classmethod
     def from_env(cls) -> "ApertusClient":
@@ -132,10 +137,19 @@ class ApertusClient:
         model = os.environ.get("APERTUS_MODEL")
         if not (base and key and model):
             raise MissingCredentials()
+        spec = None
+        spec_json = os.environ.get("APERTUS_BOUND_SPEC_JSON")
+        if spec_json:
+            try:
+                spec = TokenBoundSpec(**json.loads(spec_json))
+            except (json.JSONDecodeError, TypeError) as e:
+                raise BoundNotConfigured(
+                    f"APERTUS_BOUND_SPEC_JSON invalid: {e}") from e
         return cls(
             base=base, key=key, model=model,
             timeout_s=float(os.environ.get("APERTUS_TIMEOUT_S", "120")),
             rps=float(os.environ.get("APERTUS_RPS", "2")),
+            bound_spec=spec,
         )
 
     def _throttle(self) -> None:
@@ -143,13 +157,32 @@ class ApertusClient:
         if wait > 0:
             time.sleep(wait)
 
-    @staticmethod
-    def _prompt_token_bound(messages) -> int:
-        """Verified upper bound on prompt tokens (byte-level BPE: every token
-        decodes to >= 1 byte) plus a flat 256-token chat-template/special-token
-        allowance. NOT an estimate — a conservative bound."""
-        return sum(len(str(m.get("content", "")).encode("utf-8"))
-                   for m in messages) + 256
+    def _prompt_token_bound(self, messages) -> int:
+        """Conservative prompt-token bound under the CONFIGURED
+        :class:`TokenBoundSpec` — message count, per-message role/template
+        overhead, request-level special tokens, and UTF-8 content bytes of
+        EVERY message (multi-turn / repair history included). Without a
+        spec, or when the spec does not cover this model or this message
+        shape, raises :class:`BoundNotConfigured` BEFORE any dispatch: the
+        token allowance is conditional on a configured bound and is never
+        treated as an unconditional guarantee."""
+        spec = self.bound_spec
+        if spec is None:
+            raise BoundNotConfigured(
+                "no token-bound configuration — dispatch BLOCKED: the token "
+                "allowance is conditional on a configured conservative bound")
+        if spec.model and spec.model != self.model:
+            raise BoundNotConfigured(
+                f"bound spec covers model '{spec.model}', not '{self.model}'")
+        total = spec.request_overhead_tokens
+        for m in messages:
+            if not isinstance(m.get("role"), str) or \
+                    not isinstance(m.get("content"), str):
+                raise BoundNotConfigured(
+                    "message shape outside the configured bound spec "
+                    "(role/content must be strings)")
+            total += spec.per_message_tokens + len(m["content"].encode("utf-8"))
+        return total
 
     @staticmethod
     def _valid_usage(payload) -> tuple[int, int] | None:
@@ -179,15 +212,19 @@ class ApertusClient:
             body["seed"] = seed
         data = json.dumps(body).encode()
         url = f"{self.base}/chat/completions"
-        # Atomic predispatch reservation: one request slot plus the verified
-        # upper bound on this request's prompt + bounded completion. If either
-        # cap would be exceeded the reservation raises BEFORE any bytes leave
-        # — an exhausted budget permits zero dispatch, and the bound is a
-        # bound, never an estimate presented as a maximum.
+        # Conservative prompt bound is REQUIRED for any dispatch — absent
+        # a configured spec this raises BoundNotConfigured BEFORE any bytes
+        # leave (fail-closed; the token allowance is conditional, the
+        # request cap is the only unconditional limit).
+        bound = self._prompt_token_bound(messages) + max_tokens
+        # Atomic predispatch reservation: one request slot plus the bound
+        # on this request's prompt + bounded completion. If either cap
+        # would be exceeded — or the budget is poisoned by an earlier
+        # unknown-cost attempt or bound violation — reserve raises BEFORE
+        # dispatch: a halted or exhausted budget permits zero dispatch.
         reserved = 0
         if self.budget is not None:
-            reserved = self.budget.reserve(
-                self._prompt_token_bound(messages) + max_tokens)
+            reserved = self.budget.reserve(bound)
         self._throttle()
         t0 = time.monotonic()
         req = urllib.request.Request(
@@ -200,19 +237,19 @@ class ApertusClient:
         except urllib.error.HTTPError as e:
             self._last_call = time.monotonic()
             if self.budget is not None:
-                self.budget.fail_unknown()
+                self.budget.fail_unknown(f"HTTP {e.code}")
             raise ApertusUnavailable(
                 f"Apertus HTTP {e.code} — attempt consumed, token cost "
                 f"UNKNOWN; run halts (no retry after unknown cost)") from e
         except (urllib.error.URLError, TimeoutError, OSError) as e:
             if self.budget is not None:
-                self.budget.fail_unknown()
+                self.budget.fail_unknown(f"transport error: {e}")
             raise ApertusUnavailable(
                 f"Apertus unreachable ({e}) — attempt consumed, token cost "
                 f"UNKNOWN; run halts (no retry after unknown cost)") from e
         except (json.JSONDecodeError, ValueError, UnicodeDecodeError) as e:
             if self.budget is not None:
-                self.budget.fail_unknown()
+                self.budget.fail_unknown("malformed JSON response")
             raise ApertusUnavailable(
                 f"Apertus response body not valid JSON — attempt consumed, "
                 f"token cost UNKNOWN; run halts") from e
@@ -223,20 +260,27 @@ class ApertusClient:
                 raise TypeError("content is not a string")
         except (KeyError, IndexError, TypeError) as e:
             if self.budget is not None:
-                self.budget.fail_unknown()
+                self.budget.fail_unknown("missing choices/content")
             raise ApertusUnavailable(
                 f"Apertus response missing choices/content ({e}) — attempt "
                 f"consumed, token cost UNKNOWN; run halts") from e
         usage = self._valid_usage(payload)
         if usage is None:
             if self.budget is not None:
-                self.budget.fail_unknown()
+                self.budget.fail_unknown("missing/malformed usage")
             raise ApertusUnavailable(
                 "Apertus response missing/malformed usage — attempt "
                 "consumed, token cost UNKNOWN; run halts")
         pt, ct = usage
         if self.budget is not None:
-            self.budget.reconcile(reserved, pt, ct)
+            if self.budget.reconcile(reserved, pt, ct):
+                # Provider usage exceeded the reserved bound: the violation
+                # cannot be undone — actual usage is recorded in full
+                # (never clipped), the shared budget is poisoned, and the
+                # run halts. Conditional bounds are not guarantees.
+                raise ApertusUnavailable(
+                    f"provider usage {pt + ct} exceeded reserved bound "
+                    f"{reserved} — bound violated; run halts")
         return ChatResult(
             text=text,
             model=payload.get("model", self.model),
@@ -300,28 +344,55 @@ def lexical_similarity(a: str, b: str) -> float:
 
 
 class BudgetExceeded(RuntimeError):
-    """Noncached API budget exhausted — the run stops cleanly."""
+    """Noncached API budget exhausted or halted — the run stops cleanly."""
+
+
+class BoundNotConfigured(RuntimeError):
+    """No conservative token-bound configuration: dispatch is BLOCKED.
+    The token allowance is conditional on a configured bound — unlike the
+    request cap, it is never an unconditional guarantee."""
+
+
+@dataclass(frozen=True)
+class TokenBoundSpec:
+    """Explicit conservative prompt-token bound configuration for ONE
+    provider/model/message-format. ``per_message_tokens`` covers role +
+    per-message template overhead; ``request_overhead_tokens`` covers
+    request-level special tokens/wrapper; content is bounded by UTF-8
+    bytes (>= tokens for byte-level BPE). ``provenance`` must state where
+    these numbers come from and under which assumptions (tokenizer
+    verification or deliberate looseness). Absent a spec, ApertusClient
+    refuses to dispatch."""
+    per_message_tokens: int
+    request_overhead_tokens: int
+    provenance: str
+    provider: str = ""
+    model: str = ""
 
 
 @dataclass
 class ApiBudget:
-    """Hard cap on NEW (noncached) API spend across a whole run, enforced by
+    """Cap on NEW (noncached) API spend across a whole run, enforced by
     ATOMIC PREDISPATCH RESERVATION inside ``ApertusClient.complete``.
 
     Before any bytes leave, ``reserve`` atomically (under a lock) claims one
-    request slot plus a VERIFIED conservative upper bound on that request's
-    prompt tokens (UTF-8-byte bound on serialized message contents + flat
-    template allowance) and bounded completion (``max_tokens``). Either cap
-    exceeded ⇒ ``BudgetExceeded`` before dispatch: an exhausted budget sends
-    zero requests.
+    request slot plus a CONFIGURED conservative bound on that request's
+    prompt tokens (``TokenBoundSpec``: per-message + request overhead +
+    UTF-8 content bytes) and bounded completion (``max_tokens``). The
+    request cap is the unconditional limit; the token allowance is
+    CONDITIONAL on the configured bound — if provider usage ever exceeds a
+    reservation, the violation is recorded in full (never clipped), the
+    budget is poisoned and the run halts.
 
     After the response, ``reconcile`` releases the unused part of the
     reservation only when provider ``usage`` is present AND valid (both
     fields nonnegative true integers). Otherwise ``fail_unknown`` RETAINS
-    the reservation — the worst case stays committed — and the caller halts:
-    no retry is ever attempted after an unknown-cost attempt. ``tokens`` is
-    therefore committed spend (measured + still-held reservations);
-    ``measured_tokens`` is the provider-reported subset.
+    the reservation AND POISONS the budget — every later ``reserve`` on
+    any client or method sharing this object rejects before dispatch, so
+    an unknown-cost attempt permanently halts the whole run: no retry is
+    ever attempted after it. ``tokens`` is therefore committed spend
+    (measured + still-held reservations); ``measured_tokens`` is the
+    provider-reported subset.
 
     Cache hits never consume budget — reuse is allowed only when the cache
     key (backend|model|prompt_version|kind|split|item|payload) matches
@@ -331,16 +402,27 @@ class ApiBudget:
     max_tokens: int = 600_000
     requests: int = 0            # reserved == dispatched attempts
     tokens: int = 0              # committed: measured + held reservations
-    measured_tokens: int = 0     # provider-reported usage only
+    measured_tokens: int = 0     # provider-reported usage only (unclipped)
     attempts_no_usage: int = 0   # dispatched attempts with unknown token cost
     logical_calls: int = 0       # non-cached judge calls
+    bound_violations: int = 0    # provider usage exceeded a reserved bound
+    poisoned: str | None = None  # halt reason; poisons ALL future reserves
 
     def __post_init__(self) -> None:
         self._lock = threading.Lock()
 
+    def poison(self, reason: str) -> None:
+        """Halt latch: every later ``reserve`` — across clients and methods
+        sharing this budget — rejects before dispatch."""
+        with self._lock:
+            if self.poisoned is None:
+                self.poisoned = reason
+
     def reserve(self, bound_tokens: int) -> int:
         """Atomically hold 1 attempt + ``bound_tokens``; raises BEFORE dispatch."""
         with self._lock:
+            if self.poisoned is not None:
+                raise BudgetExceeded(f"run halted: {self.poisoned}")
             if self.requests >= self.max_requests:
                 raise BudgetExceeded(
                     f"request cap reached ({self.requests}/{self.max_requests})")
@@ -353,18 +435,32 @@ class ApiBudget:
         return bound_tokens
 
     def reconcile(self, reserved: int, prompt_tokens: int,
-                  completion_tokens: int) -> None:
-        """Valid usage received: charge actual, release the unused reserve."""
+                  completion_tokens: int) -> bool:
+        """Valid usage received: charge actual usage IN FULL (never clipped)
+        and release the unused part of the reservation. Returns True when
+        provider usage EXCEEDED the reserved bound — a bound violation that
+        cannot be undone, so the budget is poisoned and the caller halts."""
+        actual = prompt_tokens + completion_tokens
+        violated = actual > reserved
         with self._lock:
-            actual = prompt_tokens + completion_tokens
             self.tokens += actual - reserved
             self.measured_tokens += actual
+            if violated:
+                self.bound_violations += 1
+                if self.poisoned is None:
+                    self.poisoned = (
+                        f"provider usage {actual} exceeded reserved bound "
+                        f"{reserved} — bound violated, run halted")
+        return violated
 
-    def fail_unknown(self) -> None:
+    def fail_unknown(self, reason: str = "unknown-cost attempt") -> None:
         """Dispatched attempt whose cost is UNKNOWN: keep the reservation
-        held (worst case stays committed) and count it explicitly."""
+        held (worst case stays committed), count it explicitly, and poison
+        the budget — no later reserve on ANY client/method may dispatch."""
         with self._lock:
             self.attempts_no_usage += 1
+            if self.poisoned is None:
+                self.poisoned = reason
 
 
 class MockApertusClient:

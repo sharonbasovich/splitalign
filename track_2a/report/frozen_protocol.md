@@ -6,23 +6,36 @@ particular is **not authorized** and its document IDs stay unopened.
 
 ## Hard rules (apply to every future real-inference proposal)
 
-1. **Reserved conservative maxima, not estimates.** Every attempt and token
-   figure here is a reserved maximum enforced by atomic predispatch
-   reservation: before any bytes leave, one request slot plus a *verified
-   conservative upper bound* on that request (UTF-8-byte bound on serialized
-   message contents + flat template allowance + bounded `max_tokens`
-   completion) is claimed against the shared `ApiBudget`. A bound is a bound —
-   an estimate may never be presented as a maximum or a guaranteed hard total.
-   If no trustworthy provider/tokenizer bound is available, real inference is
-   BLOCKED and the hard-cap claim explicitly disclaimed.
-2. **Unknown usage halts the run.** An attempt's token cost counts only
-   provider-reported `usage` validated as nonnegative true integers. Missing,
-   malformed, or absent usage; HTTP errors; timeouts; unparseable response
-   bodies; or missing `choices`/`content` all mean **unknown cost**: the
-   attempt is recorded, its reservation stays committed (never released as
-   "free"), and the run halts fail-closed immediately — **no retry is ever
-   attempted after an unknown-cost attempt**. Internal logical calls log at
-   the call boundary; wire-level accounting happens only at reservation.
+1. **Reserved conservative maxima, not estimates — and conditional, not
+   guaranteed.** The request cap is the only unconditional limit. Every
+   token figure is a *conditional* allowance enforced by atomic predispatch
+   reservation: before any bytes leave, one request slot plus a
+   *configured* conservative bound on that request — a `TokenBoundSpec`
+   with stated provenance/assumptions for the exact provider, model and
+   message format, covering per-message role/template overhead,
+   request-level special tokens, UTF-8 bytes of every message's content
+   (multi-turn/repair history included), plus bounded `max_tokens`
+   completion — is claimed against the shared `ApiBudget`. **Without a
+   configured bound spec, dispatch is BLOCKED** (`BoundNotConfigured`);
+   there is no default bound. If provider-reported usage ever exceeds a
+   reservation, the violation cannot be undone: actual usage is recorded
+   in full (never clipped), flagged as a `bound_violations` entry, the
+   budget is poisoned and the run halts. An estimate may never be
+   presented as a maximum or a guaranteed hard total; if no trustworthy
+   bound can be configured, real inference is BLOCKED and any token-cap
+   claim is explicitly conditional.
+2. **Unknown usage halts the run — permanently.** An attempt's token cost
+   counts only provider-reported `usage` validated as nonnegative true
+   integers. Missing, malformed, or absent usage; HTTP errors; timeouts;
+   unparseable response bodies; or missing `choices`/`content` all mean
+   **unknown cost**: the attempt is recorded, its reservation stays
+   committed (never released as "free"), the shared budget is **poisoned**
+   — every later reservation on any client or method rejects before
+   dispatch — and the run halts fail-closed immediately (**no retry is
+   ever attempted after an unknown-cost attempt**). `cmd_pipeline` skips
+   all remaining inference methods, preserves partial artifacts, and
+   returns nonzero. Internal logical calls log at the call boundary;
+   wire-level accounting happens only at reservation.
 3. Cache hits are free and counted separately — only when the full
    backend/model/prompt_version/kind/split/item/payload key matches.
 4. Held-out/quarantined/test splits remain fail-closed. Calibration, tuning,
@@ -45,7 +58,10 @@ particular is **not authorized** and its document IDs stay unopened.
   the repair-exhausted `fallback_label=5` whole-document policy — a reference
   fallback, **not** a strong comparator).
 - Budget: reviewer-suggested **≤40 outbound attempts and ≤30,000 committed
-  tokens** shared across both methods — reserved conservative maxima.
+  tokens** shared across both methods — the request cap is unconditional;
+  the token allowance is conditional on a configured `TokenBoundSpec`
+  (`APERTUS_BOUND_SPEC_JSON`) with stated provenance. **Without that
+  configuration, Step A cannot dispatch at all** — see rule 1.
 - Proposed CLI (not executed):
   `SPLITALIGN_BACKEND=apertus python -m splitalign.run pipeline --split val
    --lang all --limit 1 --offset 0 --bootstrap 0
