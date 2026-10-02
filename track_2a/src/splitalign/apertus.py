@@ -49,7 +49,13 @@ class MissingCredentials(RuntimeError):
 
 
 class ApertusUnavailable(RuntimeError):
-    pass
+    """``usage`` = (prompt_tokens, completion_tokens) when the provider
+    reported VALID usage before the error was raised (e.g. a bound
+    violation) — the known usage is preserved, never dropped."""
+
+    def __init__(self, msg: str, *, usage: tuple[int, int] | None = None):
+        super().__init__(msg)
+        self.usage = usage
 
 
 @dataclass
@@ -73,26 +79,43 @@ class CallLogger:
     def __init__(self, path: Path | None, run_id: str | None = None):
         self.path = Path(path) if path else None
         self.run_id = run_id
+        self._seq = 0
 
     def log(self, *, split: str, item_id: str, kind: str, messages,
             result: ChatResult | None, ok: bool, error: str | None,
             cached: bool, backend: str | None = None,
-            model: str | None = None) -> None:
+            model: str | None = None, method: str | None = None,
+            dispatched: bool = False, reserved: int | None = None,
+            usage: tuple[int, int] | None = None) -> None:
         if not self.path:
             return
+        self._seq += 1
         self.path.parent.mkdir(parents=True, exist_ok=True)
         prompt_text = "\n".join(m.get("content", "") for m in messages)
+        pt = result.prompt_tokens if result else (usage[0] if usage else None)
+        ct = (result.completion_tokens if result
+              else (usage[1] if usage else None))
         rec = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            # unique run/method/attempt identity for every record
+            "attempt_id": f"{self.run_id}-{self._seq}",
             "run_id": self.run_id,
+            "method": method,
             "split": split, "item_id": item_id, "kind": kind,
+            # outbound-boundary truth: only dispatched records are real
+            # transport attempts; budget/bound blocks are predispatch events
+            "dispatched": dispatched,
+            "reserved_tokens": reserved,
+            # known | unknown | None — never silently zero
+            "usage_status": ("known" if (result or usage) else
+                             "unknown" if dispatched else None),
             # actual backend/model on EVERY record, incl. cache-hit/error paths
             "backend": (result.backend if result else backend),
             "model": (result.model if result else model),
             "prompt_sha256": hashlib.sha256(prompt_text.encode()).hexdigest(),
             "prompt_chars": len(prompt_text),
-            "prompt_tokens": result.prompt_tokens if result else None,
-            "completion_tokens": result.completion_tokens if result else None,
+            "prompt_tokens": pt,
+            "completion_tokens": ct,
             "latency_ms": result.latency_ms if result else None,
             "usage_estimated": result.usage_estimated if result else None,
             "cached": cached,
@@ -122,6 +145,9 @@ class ApertusClient:
         self.max_retries = 0  # kept for signature compat; retries are
         # disabled: any failed attempt has unknown token cost => halt
         self._last_call = 0.0
+        # reservation held for the most recent complete() (None when the
+        # call was blocked predispatch or had no budget) — for attempt logs
+        self.last_reservation: int | None = None
         # optional shared ApiBudget; set post-construction by the caller so
         # the SAME object governs every attempt across both methods
         self.budget = None
@@ -202,6 +228,7 @@ class ApertusClient:
 
     def complete(self, messages, *, max_tokens: int = 2048,
                  temperature: float = 0.0, seed: int | None = None) -> ChatResult:
+        self.last_reservation = None
         body: dict = {
             "model": self.model,
             "messages": messages,
@@ -225,6 +252,7 @@ class ApertusClient:
         reserved = 0
         if self.budget is not None:
             reserved = self.budget.reserve(bound)
+            self.last_reservation = reserved
         self._throttle()
         t0 = time.monotonic()
         req = urllib.request.Request(
@@ -280,7 +308,8 @@ class ApertusClient:
                 # run halts. Conditional bounds are not guarantees.
                 raise ApertusUnavailable(
                     f"provider usage {pt + ct} exceeded reserved bound "
-                    f"{reserved} — bound violated; run halts")
+                    f"{reserved} — bound violated; run halts",
+                    usage=(pt, ct))
         return ChatResult(
             text=text,
             model=payload.get("model", self.model),

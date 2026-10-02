@@ -216,6 +216,7 @@ def _predict(args, mode: str) -> int:
                                             item["id"], seed, budget=budget,
                                             run_id=run_dir.name,
                                             log_path=run_dir / "calls.jsonl")
+                judge.method = mode
                 try:
                     if mode == "baseline":
                         out = predict_baseline_item(item, judge)
@@ -566,13 +567,14 @@ def _method_usage(calls_path: Path, mode: str, budget) -> dict:
     """Per-method call accounting, SEPARATE from shared run totals.
 
     Counts logged calls by kind->method mapping. Cache hits are free and
-    counted separately; ``new_requests`` counts noncached logged calls —
-    HTTP-level retries inside complete() are not separately logged, so
-    shared-budget ``requests`` remains the authoritative attempt count.
+    counted separately; ``new_requests`` counts logged OUTBOUND attempts
+    (``dispatched`` records — predispatch budget/bound blocks are counted
+    separately as ``blocked_predispatch``). Shared-budget ``requests``
+    remains the authoritative attempt count.
     """
     kinds = {"splitalign": {"pair_similarity", "judge_tag", "judge_pair"},
              "baseline": {"doc_baseline"}}[mode]
-    new_requests = new_tokens = cached_calls = errors = 0
+    new_requests = new_tokens = cached_calls = errors = blocked = 0
     if calls_path.exists():
         for line in calls_path.read_text().splitlines():
             if not line.strip():
@@ -583,6 +585,11 @@ def _method_usage(calls_path: Path, mode: str, budget) -> dict:
             if rec.get("cached"):
                 cached_calls += 1
                 continue
+            if rec.get("dispatched") is False:
+                blocked += 1      # predispatch block — no bytes left
+                if rec.get("error"):
+                    errors += 1
+                continue
             new_requests += 1
             new_tokens += ((rec.get("prompt_tokens") or 0)
                            + (rec.get("completion_tokens") or 0))
@@ -591,6 +598,7 @@ def _method_usage(calls_path: Path, mode: str, budget) -> dict:
     return {"new_requests": new_requests,
             "new_tokens": new_tokens,
             "cached_calls": cached_calls,
+            "blocked_predispatch": blocked,
             "errors": errors,
             # unknown-usage attempts are run-level only — the shared counter
             # must not masquerade as method-specific

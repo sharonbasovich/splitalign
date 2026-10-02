@@ -9,7 +9,8 @@ import re
 from dataclasses import dataclass, field
 
 from . import PROMPT_VERSION, PROMPT_VERSION_BY_KIND, METHOD_VERSIONS
-from .apertus import ChatResult, CallLogger, client_from_env_or_mock
+from .apertus import (ApertusUnavailable, BoundNotConfigured, BudgetExceeded,
+                      ChatResult, CallLogger, client_from_env_or_mock)
 from .cache import DiskCache, payload_hash
 from . import prompts
 
@@ -56,6 +57,7 @@ class Judge:
     max_repairs: int = 1
     unparseable_similarity: int = 0
     budget: object = None       # ApiBudget | None — caps NEW calls only
+    method: str | None = None   # caller-set method tag for attempt logs
 
     # -- low level ----------------------------------------------------------
     def _invoke(self, *, kind: str, messages: list[dict],
@@ -81,16 +83,37 @@ class Judge:
         try:
             res = self.client.complete(messages, max_tokens=max_tokens,
                                        temperature=0.0, seed=self.seed)
-        except Exception:
+        except (BudgetExceeded, BoundNotConfigured) as e:
+            # predispatch block: zero bytes left — NOT an outbound attempt
             self.logger.log(split=self.split, item_id=self.item_id, kind=kind,
                             messages=messages, result=None, ok=False,
-                            error="call failed", cached=False,
+                            error=type(e).__name__, cached=False,
                             backend=self.backend,
-                            model=getattr(self.client, "model", None))
+                            model=getattr(self.client, "model", None),
+                            method=self.method, dispatched=False,
+                            reserved=getattr(self.client, "last_reservation",
+                                             None))
+            raise
+        except Exception as e:
+            # real outbound attempt that failed; usage attached to the
+            # exception (e.g. bound violation) is known and preserved
+            usage = e.usage if isinstance(e, ApertusUnavailable) else None
+            self.logger.log(split=self.split, item_id=self.item_id, kind=kind,
+                            messages=messages, result=None, ok=False,
+                            error=type(e).__name__, cached=False,
+                            backend=self.backend,
+                            model=getattr(self.client, "model", None),
+                            method=self.method, dispatched=True,
+                            reserved=getattr(self.client, "last_reservation",
+                                             None),
+                            usage=usage)
             raise
         self.logger.log(split=self.split, item_id=self.item_id, kind=kind,
                         messages=messages, result=res, ok=True,
-                        error=None, cached=False)
+                        error=None, cached=False, method=self.method,
+                        dispatched=True,
+                        reserved=getattr(self.client, "last_reservation",
+                                         None))
         self.cache.put(key, {"text": res.text, "model": res.model,
                              "backend": res.backend})
         return res.text, False, res
