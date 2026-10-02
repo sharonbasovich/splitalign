@@ -98,6 +98,8 @@ def predict_item(item: dict, judge: Judge,
                   "dropped_punct_ids": stats.dropped_punct_ids,
                   "invalid_pairs": stats.invalid_pairs,
                   "invalid_fallback_tokens": stats.invalid_fallback_tokens,
+                  "matched_tokens": stats.matched_tokens,
+                  "valid_matched_tokens": stats.valid_matched_tokens,
                   "judge_valid_token_coverage": (
                       round(stats.valid_matched_tokens / stats.matched_tokens, 4)
                       if stats.matched_tokens else None)},

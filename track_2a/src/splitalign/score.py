@@ -111,14 +111,19 @@ def score_item(tokens_a: list[Token], tokens_b: list[Token],
             continue
 
         # matched pair (1:1, 1:2, 2:1) — v3-tag indexed judgment
-        matched_idx.update(a_tok_idx)
-        matched_idx.update(len(tokens_a) + i for i in b_tok_idx)
+        # coverage counts NON-PUNCTUATION tokens only (official exclusion)
+        matched_idx.update(i for i in a_tok_idx
+                           if not is_punctuation(tokens_a[i].text))
+        matched_idx.update(len(tokens_a) + i for i in b_tok_idx
+                           if not is_punctuation(tokens_b[i].text))
         if not isinstance(jud, TagJudgment) or not jud.ok:
             # declared score-0 fallback — counted, never emitted coverage
             stats.parse_failures += 1
             stats.invalid_pairs += 1
-            invalid_idx.update(a_tok_idx)
-            invalid_idx.update(len(tokens_a) + i for i in b_tok_idx)
+            invalid_idx.update(i for i in a_tok_idx
+                               if not is_punctuation(tokens_a[i].text))
+            invalid_idx.update(len(tokens_a) + i for i in b_tok_idx
+                               if not is_punctuation(tokens_b[i].text))
             for t in a_tok_idx:
                 labels_a[t] = 0.0
                 seen_a[t] = True
@@ -128,8 +133,10 @@ def score_item(tokens_a: list[Token], tokens_b: list[Token],
             continue
 
         stats.repairs += jud.repairs
-        valid_idx.update(a_tok_idx)
-        valid_idx.update(len(tokens_a) + i for i in b_tok_idx)
+        valid_idx.update(i for i in a_tok_idx
+                         if not is_punctuation(tokens_a[i].text))
+        valid_idx.update(len(tokens_a) + i for i in b_tok_idx
+                         if not is_punctuation(tokens_b[i].text))
         _apply_tags(labels_a, seen_a, tokens_a, a_tok_idx, jud.a_ids, stats,
                     "flagged_a")
         _apply_tags(labels_b, seen_b, tokens_b, b_tok_idx, jud.b_ids, stats,

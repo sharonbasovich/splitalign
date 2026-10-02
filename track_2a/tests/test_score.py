@@ -29,7 +29,7 @@ def test_score_tag_flagged_tokens():
     assert la == [1.0, 0.0, 0.0, -1.0]
     assert lb == [0.0, 1.0, 1.0, -1.0]
     assert st.flagged_a == 1 and st.flagged_b == 2
-    assert st.valid_matched_tokens == 8 and st.matched_tokens == 8
+    assert st.valid_matched_tokens == 6 and st.matched_tokens == 6  # nonpunct only
     assert st.invalid_pairs == 0
 
 
@@ -74,9 +74,9 @@ def test_invalid_judgment_score0_fallback():
     j = TagJudgment(a_ids=[], b_ids=[], ok=False, repairs=1)
     la, lb, st = score_item(ta, tb, sa, sb, "a b .", "c d .", ops, [j])
     assert st.parse_failures == 1 and st.invalid_pairs == 1
-    assert st.invalid_fallback_tokens == 6
+    assert st.invalid_fallback_tokens == 4  # nonpunct only
     assert la[:2] == [0.0, 0.0] and lb[:2] == [0.0, 0.0]
-    assert st.valid_matched_tokens == 0 and st.matched_tokens == 6
+    assert st.valid_matched_tokens == 0 and st.matched_tokens == 4
 
 
 def test_judge_valid_token_coverage_mix():
@@ -87,6 +87,6 @@ def test_judge_valid_token_coverage_mix():
           TagJudgment(a_ids=[], b_ids=[], ok=False)]
     la, lb, st = score_item(ta, tb, sa, sb, "a b . x y .", "c d . u v .",
                             ops, js)
-    # unique-token accounting: 6 valid, 6 under declared fallback
-    assert st.valid_matched_tokens == 6 and st.matched_tokens == 12
-    assert st.invalid_pairs == 1 and st.invalid_fallback_tokens == 6
+    # unique nonpunct accounting: 4 valid, 4 under declared fallback
+    assert st.valid_matched_tokens == 4 and st.matched_tokens == 8
+    assert st.invalid_pairs == 1 and st.invalid_fallback_tokens == 4

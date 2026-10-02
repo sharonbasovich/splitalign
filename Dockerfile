@@ -1,5 +1,9 @@
 FROM python:3.11-slim
 
+# nodejs runs the viewer schema tests (viewer_schema_test.mjs).
+RUN apt-get update && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY requirements.txt requirements-dev.txt /app/
 RUN pip install --no-cache-dir -r /app/requirements.txt -r /app/requirements-dev.txt

@@ -87,19 +87,25 @@ def test_second_method_cannot_reset_budget(pipeline_env, monkeypatch):
     assert (rd / "eval_matched_apertus_dev_val.json").exists()
 
 
-def test_retry_storm_consumes_shared_cap(pipeline_env, monkeypatch):
-    """A 429 storm: retries burn the shared budget; run stops cleanly."""
+def test_429_halts_run_no_retry(pipeline_env, monkeypatch):
+    """A 429 is one unknown-cost attempt: recorded, NO retry, run halts
+    fail-closed — both methods share the single ledger."""
     def boom(*a, **k):
         raise urllib.error.HTTPError("u", 429, "", {}, io.BytesIO(b"x"))
     monkeypatch.setattr(_ap.urllib.request, "urlopen", boom)
     args = _args(max_requests=3)
     _run.cmd_pipeline(args)
-    assert args._budget.requests == 3      # retries counted at the boundary
+    # one attempt per method (each halts at its first dispatch), no retries
+    assert args._budget.requests == 2
+    assert args._budget.attempts_no_usage == 2
     rd = next((_run.RESULTS_DIR / "runs").iterdir())
     s = json.loads((rd / "run_summary_splitalign_apertus_dev_val.json")
                    .read_text())
-    assert "request cap" in s["budget_capped"]
-    assert s["attempts_without_usage"] == 3   # unknown token cost disclosed
+    assert s["budget_capped"] and "UNKNOWN" in s["budget_capped"]
+    assert s["attempts_without_usage"] == 1   # disclosed, at splitalign stop
+    b = json.loads((rd / "run_summary_baseline_apertus_dev_val.json")
+                   .read_text())
+    assert b["budget_capped"] and b["attempts_without_usage"] == 2
 
 
 def test_runs_do_not_mix(pipeline_env, monkeypatch):
@@ -244,9 +250,9 @@ def test_lang_all_cap_mid_second_language(pipeline_env, monkeypatch):
     assert all(v["n_matched"] == 0 for v in m["per_language"].values())
 
 
-def test_lang_all_retry_storm_zero_outputs(pipeline_env, monkeypatch):
-    """500 storm with a large cap: every item fails, every language of both
-    methods is started_no_output, attempts (incl. retries) are counted."""
+def test_lang_all_500_halts_run_fail_closed(pipeline_env, monkeypatch):
+    """A 500 is an unknown-cost attempt: run halts fail-closed after ONE
+    dispatch per method (no retry), zero outputs, attempt disclosed."""
     def boom(*a, **k):
         raise urllib.error.HTTPError("u", 500, "", {}, io.BytesIO(b"x"))
     monkeypatch.setattr(_ap.urllib.request, "urlopen", boom)
@@ -254,16 +260,16 @@ def test_lang_all_retry_storm_zero_outputs(pipeline_env, monkeypatch):
     _run.cmd_pipeline(args)
     rd = next((_run.RESULTS_DIR / "runs").iterdir())
     _assert_truthful_scope(rd)
-    for mode in ("splitalign", "baseline"):
-        s = _strict(rd / f"run_summary_{mode}_apertus_dev_val.json")
-        assert s["n_completed"] == 0 and not s.get("budget_capped")
-        assert set(s["lang_status"].values()) == {"started_no_output"}
-        assert s["attempts_without_usage"] == s["new_api_requests"] > 0
-        e = _strict(rd / f"eval_{mode}_apertus_dev_val.json")
-        assert all(v["invalid_reason"] == "no matched predictions"
-                   for v in e["per_language"].values())
-    # retries counted: more attempts than logical calls
-    assert args._budget.requests > args._budget.logical_calls > 0
+    sa = _strict(rd / "run_summary_splitalign_apertus_dev_val.json")
+    assert sa["n_completed"] == 0 and sa["budget_capped"]
+    assert sa["lang_status"] == {"de": "started_no_output",
+                               "fr": "not_started", "it": "not_started"}
+    assert sa["attempts_without_usage"] == 1
+    bl = _strict(rd / "run_summary_baseline_apertus_dev_val.json")
+    assert bl["n_completed"] == 0 and bl["budget_capped"]
+    assert bl["lang_status"]["de"] == "started_no_output"
+    # exactly one dispatched attempt per method, both unknown cost
+    assert args._budget.requests == 2 and args._budget.attempts_no_usage == 2
 
 
 def test_export_viewer_requires_explicit_run(pipeline_env, monkeypatch):

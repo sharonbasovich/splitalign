@@ -111,7 +111,7 @@ def evidence() -> dict:
 def build(dest: Path) -> Path:
     dest = Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
-    for name in ("index.html", "style.css", "app.js"):
+    for name in ("index.html", "style.css", "schema.js", "app.js"):
         shutil.copy2(TRACK / "viewer" / name, dest / name)
     (dest / "evidence.js").write_text(
         "window.EVIDENCE = " + json.dumps(evidence(), ensure_ascii=False,

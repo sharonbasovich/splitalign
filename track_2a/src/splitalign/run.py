@@ -222,14 +222,16 @@ def _predict(args, mode: str) -> int:
                         out = predict_item(item, judge, score_cfg=score_cfg,
                                            lang=lang)
                 except ApertusUnavailable as e:
-                    # truthful per-item failure: no prediction, run continues
+                    # unknown-cost attempt: record the failed item, then HALT
+                    # the run fail-closed (no further dispatches after an
+                    # attempt whose token cost is unknown)
                     det = {"id": item["id"], "lang": lang, "failed": True,
                            "error": str(e)[:300],
                            "provenance": provenance(backend, judge,
                                                     {"mode": mode, "split": split})}
                     all_details.append(det)
                     print(f"  {item['id']}: FAILED ({mode}) {e}", file=sys.stderr)
-                    continue
+                    raise
                 recs.append(out["record"])
                 completed_ids[lang].append(item["id"])
                 det = dict(out["detail"])
@@ -250,10 +252,12 @@ def _predict(args, mode: str) -> int:
                 for r in recs:
                     f.write(json.dumps(r, ensure_ascii=False) + "\n")
             print(f"wrote {len(recs)} predictions -> {path}")
-    except BudgetExceeded as e:
-        # hard cap hit mid-item: keep every completed record, report honestly
+    except (BudgetExceeded, ApertusUnavailable) as e:
+        # hard cap hit mid-item OR unknown-cost attempt: keep every completed
+        # record, report honestly, halt fail-closed
         capped = str(e)
-        print(f"BUDGET CAP: {capped} — writing partial results", file=sys.stderr)
+        print(f"RUN STOPPED: {capped} — writing partial results",
+              file=sys.stderr)
         if recs and lang is not None:  # bound from the interrupted iteration
             path = _pred_path(run_dir, backend, mode, lang)
             with path.open("w") as f:
@@ -285,18 +289,21 @@ def _predict(args, mode: str) -> int:
         # these are SHARED run totals across both modes (one ApiBudget) —
         # per-method figures are under "method_usage"
         "new_api_requests": budget.requests if budget else 0,
-        "new_api_tokens": budget.tokens if budget else 0,
+        "tokens_measured": budget.measured_tokens if budget else 0,
+        "tokens_committed": budget.tokens if budget else 0,
         "logical_calls": budget.logical_calls if budget else 0,
         "attempts_without_usage": budget.attempts_no_usage if budget else 0,
         "method_usage": _method_usage(run_dir / "calls.jsonl", mode,
                                       budget),
         "usage_uncertainty_note": (
-            f"{budget.attempts_no_usage} failed HTTP attempt(s) have unknown "
-            "token cost and are NOT included in new_api_tokens"
+            f"{budget.attempts_no_usage} dispatched attempt(s) have unknown "
+            "token cost; their RESERVED bounds stay committed in "
+            "tokens_committed and are NOT included in tokens_measured"
             if budget and budget.attempts_no_usage else None),
         "overshoot_note": (
-            "a single in-flight request may overshoot the token cap by at "
-            "most prompt + bounded max_tokens completion" if budget else None),
+            "every request reserves a verified prompt+completion upper bound "
+            "before dispatch, so committed tokens never exceed the token cap"
+            if budget else None),
         "elapsed_s": round(elapsed, 1),
         "caution": ("PARTIAL RUN — do not treat coverage as complete"
                     if capped else None),
@@ -521,7 +528,7 @@ def cmd_export_viewer(args) -> int:
                           inference=inference, split=split, evaluation=evals,
                           limitations=lims, run=run_info)
     # keep the viewer self-contained wherever OUT_DIR points
-    for name in ("index.html", "style.css", "app.js"):
+    for name in ("index.html", "style.css", "schema.js", "app.js"):
         src = TRACK_DIR / "viewer" / name
         dst = EVIDENCE_PATH.parent / name
         if src.resolve() != dst.resolve():
@@ -575,10 +582,13 @@ def _method_usage(calls_path: Path, mode: str, budget) -> dict:
             "new_tokens": new_tokens,
             "cached_calls": cached_calls,
             "errors": errors,
-            "attempts_without_usage": (budget.attempts_no_usage
-                                     if budget else 0),
-            "note": ("per-method counts from the run-scoped call log; HTTP "
-                     "retries count against the SHARED budget totals only")}
+            # unknown-usage attempts are run-level only — the shared counter
+            # must not masquerade as method-specific
+            "unknown_usage_attempts": None,
+            "note": ("per-method counts from the run-scoped call log "
+                     "(logical calls); unknown-usage attempts are a SHARED "
+                     "run-level figure — see attempts_without_usage in the "
+                     "summary, not attributable to a single method")}
 
 
 def _matched_eval(run_dir: Path, split: str, langs, backend: str,
@@ -649,17 +659,18 @@ def _method_diagnostics(run_dir: Path, split: str, backend: str) -> dict:
             tot = {"flagged_a": 0, "flagged_b": 0, "dropped_punct_ids": 0,
                    "invalid_pairs": 0, "invalid_fallback_tokens": 0,
                    "sim_unknown_cells": 0, "sim_imputed_cells": 0,
-                   "ops_touching_unknown": 0}
-            covs = []
+                   "ops_touching_unknown": 0,
+                   "matched_tokens": 0, "valid_matched_tokens": 0}
             for it in items:
                 st = it.get("stats", {})
                 for k in tot:
                     tot[k] += st.get(k) or 0
-                if st.get("judge_valid_token_coverage") is not None:
-                    covs.append(st["judge_valid_token_coverage"])
             agg.update(tot)
+            # token-weighted aggregate coverage (nonpunct tokens), NOT an
+            # average of per-document ratios
             agg["judge_valid_token_coverage"] = (
-                round(sum(covs) / len(covs), 4) if covs else None)
+                round(tot["valid_matched_tokens"] / tot["matched_tokens"], 4)
+                if tot["matched_tokens"] else None)
         else:
             cov_a, cov_b, repairs = [], [], 0
             for it in items:
