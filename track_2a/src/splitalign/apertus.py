@@ -33,6 +33,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -80,6 +81,9 @@ class CallLogger:
         self.path = Path(path) if path else None
         self.run_id = run_id
         self._seq = 0
+        # one CallLogger per item shares the run's calls.jsonl — a per-logger
+        # id keeps attempt_id unique across instances appending to it
+        self._logger_id = uuid.uuid4().hex[:8]
 
     def log(self, *, split: str, item_id: str, kind: str, messages,
             result: ChatResult | None, ok: bool, error: str | None,
@@ -98,7 +102,7 @@ class CallLogger:
         rec = {
             "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             # unique run/method/attempt identity for every record
-            "attempt_id": f"{self.run_id}-{self._seq}",
+            "attempt_id": f"{self.run_id}-{self._logger_id}-{self._seq}",
             "run_id": self.run_id,
             "method": method,
             "split": split, "item_id": item_id, "kind": kind,

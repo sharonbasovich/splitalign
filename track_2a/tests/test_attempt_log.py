@@ -66,7 +66,8 @@ def test_cap_block_is_predispatch_not_attempt(no_sleep, monkeypatch, tmp_path):
     assert r["dispatched"] is False
     assert r["usage_status"] is None
     assert r["ok"] is False and r["error"] == "BudgetExceeded"
-    assert r["attempt_id"] == "testrun-1" and r["method"] == "splitalign"
+    assert r["attempt_id"].startswith("testrun-") and \
+        r["attempt_id"].endswith("-1") and r["method"] == "splitalign"
 
 
 def test_missing_bound_config_is_predispatch_block(no_sleep, monkeypatch,
@@ -131,6 +132,27 @@ def test_unknown_cost_dispatch_marked_unknown(no_sleep, monkeypatch,
     assert r["prompt_tokens"] is None and r["completion_tokens"] is None
     assert r["reserved_tokens"] == 256 + 8 + 1 + 1
     assert budget.attempts_no_usage == 1 and budget.poisoned
+
+
+def test_attempt_ids_unique_across_logger_instances(no_sleep, monkeypatch,
+                                                    tmp_path):
+    """make_judge builds ONE CallLogger per item appending to the same
+    run-scoped calls.jsonl — attempt_id must be unique across instances."""
+    monkeypatch.setattr(_ap.urllib.request, "urlopen",
+                        lambda *a, **k: _ok_resp(pt=1, ct=1))
+    budget = ApiBudget(max_requests=100, max_tokens=10**6)
+    shared = tmp_path / "calls.jsonl"
+    for iid in ("synthetic_a", "synthetic_b"):
+        c = _client(budget)
+        j = Judge(client=c, backend="apertus",
+                  cache=DiskCache(tmp_path / "cache"),
+                  logger=CallLogger(shared, run_id="testrun"),
+                  split="dev/test", item_id=iid, seed=0)
+        j.budget = budget
+        _invoke(j)
+    recs = _recs(tmp_path)
+    assert len({r["attempt_id"] for r in recs}) == 2
+    assert all(r["run_id"] == "testrun" for r in recs)
 
 
 def test_attempt_ids_unique_across_records(no_sleep, monkeypatch, tmp_path):
