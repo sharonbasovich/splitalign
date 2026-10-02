@@ -56,6 +56,29 @@ Return ONLY a JSON object:
   "differing_spans": {{"side_a": ["<verbatim span>", ...],
                       "side_b": ["<verbatim span>", ...]}}}}"""
 
+JUDGE_TAG_SYSTEM = (
+    "You are a precise cross-lingual token difference tagger for Swiss "
+    "government documents (English vs. {lang_name}). You receive two aligned "
+    "passages as [index, token] arrays and tag every token whose meaning has "
+    "no equivalent on the other side (added, omitted or changed content). "
+    "Answer only with JSON."
+)
+
+JUDGE_TAG_USER = """Passage A ({lang_a}) and passage B ({lang_b}) are given as
+[index, token] arrays. Tag EVERY token index on each side whose meaning
+differs from the other side: content present there with no corresponding
+meaning in the other passage. Indices are 0-based positions inside each
+array. If nothing differs, return empty lists.
+
+Request:
+```json
+{request}
+```
+
+Return ONLY a JSON object:
+{{"a_ids": [<integer token index>, ...],
+  "b_ids": [<integer token index>, ...]}}"""
+
 # Re-implemented baseline prompt (our own phrasing of the task's response
 # contract). It is NOT the upstream template: upstream's few-shot prompt
 # has no license attached, so we do not reproduce it. Behaviour compared
@@ -90,6 +113,14 @@ def judge_request(a_text: str, b_text: str, lang_a: str,
                   lang_b: str) -> dict:
     return {"kind": "judge_pair", "lang_a": lang_a, "lang_b": lang_b,
             "a": a_text, "b": b_text}
+
+
+def judge_tag_request(a_tokens: list[str], b_tokens: list[str],
+                      lang_a: str, lang_b: str) -> dict:
+    """Indexed token arrays for the v3-tag judge (0-based local indices)."""
+    return {"kind": "judge_tag", "lang_a": lang_a, "lang_b": lang_b,
+            "a": [[i, t] for i, t in enumerate(a_tokens)],
+            "b": [[i, t] for i, t in enumerate(b_tokens)]}
 
 
 def baseline_request(tokens_a: list[str], tokens_b: list[str]) -> dict:

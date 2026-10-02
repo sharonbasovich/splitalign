@@ -25,7 +25,7 @@ import uuid
 from dataclasses import asdict
 from pathlib import Path
 
-from . import PROMPT_VERSION, __version__, guard
+from . import METHOD_VERSIONS, PROMPT_VERSION, PROMPT_VERSION_BY_KIND, __version__, guard
 from .align import AlignConfig
 from .apertus import (ApiBudget, ApertusUnavailable, BudgetExceeded,
                       MissingCredentials)
@@ -194,6 +194,8 @@ def _predict(args, mode: str) -> int:
         "source": _source_info(),
         "splitalign_version": __version__,
         "prompt_version": PROMPT_VERSION,
+        "prompt_versions_by_kind": PROMPT_VERSION_BY_KIND,
+        "method_versions": METHOD_VERSIONS,
         "gold_sha256": _gold_sha256(split, langs),
         "score_config": asdict(score_cfg),
         "cli": {k: getattr(args, k, None) for k in
@@ -278,11 +280,16 @@ def _predict(args, mode: str) -> int:
         "lang_status": {l: _status(l) for l in langs},
         "n_planned": sum(len(v) for v in planned_ids.values()),
         "n_completed": sum(len(v) for v in completed_ids.values()),
+        "method_version": METHOD_VERSIONS[mode],
         "budget_capped": capped,
+        # these are SHARED run totals across both modes (one ApiBudget) —
+        # per-method figures are under "method_usage"
         "new_api_requests": budget.requests if budget else 0,
         "new_api_tokens": budget.tokens if budget else 0,
         "logical_calls": budget.logical_calls if budget else 0,
         "attempts_without_usage": budget.attempts_no_usage if budget else 0,
+        "method_usage": _method_usage(run_dir / "calls.jsonl", mode,
+                                      budget),
         "usage_uncertainty_note": (
             f"{budget.attempts_no_usage} failed HTTP attempt(s) have unknown "
             "token cost and are NOT included in new_api_tokens"
@@ -527,7 +534,7 @@ def cmd_export_viewer(args) -> int:
 
 def _limitations(backend: str) -> list[str]:
     lims = [
-        "Sentence-level judgments are mapped to uniform token scores except on reported differing spans — fine-grained in-sentence variation is approximated.",
+        "Matched-pair localization comes from the judge's token-index tags (v3-tag), not a uniform per-pair score; pairs invalid after one repair fall back to a declared score of 0 and are counted.",
         "Cross-lingual alignment is monotone; non-monotone reordering is not modelled.",
         "Only dev/train and dev/val were used; the held-out firewall is enforced by this build's guard module.",
         "The 'baseline' method is our re-implemented whole-document token-annotation prompt (same response contract; not the upstream template).",
@@ -536,6 +543,42 @@ def _limitations(backend: str) -> list[str]:
     if backend == "mock":
         lims.insert(0, "MOCK backend: all shown outputs are deterministic lexical heuristics, NOT Apertus inference. Numbers are plumbing validations only.")
     return lims
+
+
+def _method_usage(calls_path: Path, mode: str, budget) -> dict:
+    """Per-method call accounting, SEPARATE from shared run totals.
+
+    Counts logged calls by kind->method mapping. Cache hits are free and
+    counted separately; ``new_requests`` counts noncached logged calls —
+    HTTP-level retries inside complete() are not separately logged, so
+    shared-budget ``requests`` remains the authoritative attempt count.
+    """
+    kinds = {"splitalign": {"pair_similarity", "judge_tag", "judge_pair"},
+             "baseline": {"doc_baseline"}}[mode]
+    new_requests = new_tokens = cached_calls = errors = 0
+    if calls_path.exists():
+        for line in calls_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            rec = json.loads(line)
+            if rec.get("kind") not in kinds:
+                continue
+            if rec.get("cached"):
+                cached_calls += 1
+                continue
+            new_requests += 1
+            new_tokens += ((rec.get("prompt_tokens") or 0)
+                           + (rec.get("completion_tokens") or 0))
+            if rec.get("error"):
+                errors += 1
+    return {"new_requests": new_requests,
+            "new_tokens": new_tokens,
+            "cached_calls": cached_calls,
+            "errors": errors,
+            "attempts_without_usage": (budget.attempts_no_usage
+                                     if budget else 0),
+            "note": ("per-method counts from the run-scoped call log; HTTP "
+                     "retries count against the SHARED budget totals only")}
 
 
 def _matched_eval(run_dir: Path, split: str, langs, backend: str,
@@ -578,12 +621,60 @@ def _matched_eval(run_dir: Path, split: str, langs, backend: str,
         "note": ("methods compared only on identical produced IDs; "
                  "macro is null unless ALL required languages are matched "
                  "and finite"),
+        "method_versions": METHOD_VERSIONS,
+        "baseline_disclaimer": (
+            "the baseline is the repair-exhausted fallback_label=5 policy "
+            "on an unchanged v1 prompt — a reference, not a strong "
+            "comparator"),
+        "diagnostics": _method_diagnostics(run_dir, split, backend),
         "per_language": per_lang,
         "macro_matched": {
             "splitalign": _macro(macros["splitalign"]),
             "baseline": _macro(macros["baseline"]),
         },
     }
+
+
+def _method_diagnostics(run_dir: Path, split: str, backend: str) -> dict:
+    """Aggregate v3 coverage/validity metrics from per-item details."""
+    tag = split.replace("/", "_")
+    out = {}
+    for mode in ("splitalign", "baseline"):
+        p = run_dir / f"details_{mode}_{backend}_{tag}.json"
+        if not p.exists():
+            continue
+        items = json.loads(p.read_text())
+        agg: dict = {"items": len(items)}
+        if mode == "splitalign":
+            tot = {"flagged_a": 0, "flagged_b": 0, "dropped_punct_ids": 0,
+                   "invalid_pairs": 0, "invalid_fallback_tokens": 0,
+                   "sim_unknown_cells": 0, "sim_imputed_cells": 0,
+                   "ops_touching_unknown": 0}
+            covs = []
+            for it in items:
+                st = it.get("stats", {})
+                for k in tot:
+                    tot[k] += st.get(k) or 0
+                if st.get("judge_valid_token_coverage") is not None:
+                    covs.append(st["judge_valid_token_coverage"])
+            agg.update(tot)
+            agg["judge_valid_token_coverage"] = (
+                round(sum(covs) / len(covs), 4) if covs else None)
+        else:
+            cov_a, cov_b, repairs = [], [], 0
+            for it in items:
+                if it.get("emitted_coverage_a") is not None:
+                    cov_a.append(it["emitted_coverage_a"])
+                if it.get("emitted_coverage_b") is not None:
+                    cov_b.append(it["emitted_coverage_b"])
+                repairs += it.get("repairs") or 0
+            agg["emitted_coverage_a"] = (
+                round(sum(cov_a) / len(cov_a), 4) if cov_a else None)
+            agg["emitted_coverage_b"] = (
+                round(sum(cov_b) / len(cov_b), 4) if cov_b else None)
+            agg["repairs"] = repairs
+        out[mode] = agg
+    return out
 
 
 def _dump_eval(r):

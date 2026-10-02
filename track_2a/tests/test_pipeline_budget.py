@@ -191,6 +191,8 @@ def test_lang_all_cap_mid_first_language(pipeline_env, monkeypatch):
         for f in d.iterdir():
             f.unlink()
         d.rmdir()
+    import shutil
+    shutil.rmtree(_run.RESULTS_DIR / "cache", ignore_errors=True)
     args = _args(lang="all", limit=2, max_requests=per_item + 1)
     _run.cmd_pipeline(args)
     rd = next((_run.RESULTS_DIR / "runs").iterdir())
@@ -221,6 +223,8 @@ def test_lang_all_cap_mid_second_language(pipeline_env, monkeypatch):
         for f in d.iterdir():
             f.unlink()
         d.rmdir()
+    import shutil
+    shutil.rmtree(_run.RESULTS_DIR / "cache", ignore_errors=True)
     args = _args(lang="all", limit=1, max_requests=per_de + 1)
     _run.cmd_pipeline(args)
     rd = next((_run.RESULTS_DIR / "runs").iterdir())

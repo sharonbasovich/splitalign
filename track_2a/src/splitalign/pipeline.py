@@ -11,11 +11,11 @@ import re
 import sys
 from pathlib import Path
 
-from . import PROMPT_VERSION, __version__
+from . import PROMPT_VERSION, PROMPT_VERSION_BY_KIND, METHOD_VERSIONS, __version__
 from .align import AlignConfig, AlignOp, align, coverage
 from .apertus import CallLogger, client_from_env_or_mock
 from .cache import DiskCache
-from .judge import Judge, Judgment
+from .judge import Judge, Judgment, TagJudgment
 from . import prompts
 from .metricspec import (map_label_from_positive_to_negative,
                          parse_token_labels)
@@ -42,15 +42,29 @@ def predict_item(item: dict, judge: Judge,
     sim = judge.similarity_matrix(a_texts, b_texts)
     ops = align(sim, align_cfg)
 
-    judgments: list[Judgment | None] = []
+    judgments: list[TagJudgment | None] = []
     for op in ops:
         if op.a_start < 0 or op.b_start < 0:
             judgments.append(None)  # asymmetric op: no pair to judge
             continue
-        pa = " ".join(a_texts[op.a_start:op.a_end])
-        pb = " ".join(b_texts[op.b_start:op.b_end])
-        judgments.append(judge.judge_pair(pa, pb, lang_a="en", lang_b=lang))
+        a_tok = [t.text
+                 for s in segs_a[op.a_start:op.a_end]
+                 for t in tokens_a[s.start_token:s.end_token]]
+        b_tok = [t.text
+                 for s in segs_b[op.b_start:op.b_end]
+                 for t in tokens_b[s.start_token:s.end_token]]
+        judgments.append(judge.judge_tag(a_tok, b_tok,
+                                         lang_a="en", lang_b=lang))
     assert all(j is None or j.lang_b == lang for j in judgments)
+
+    # ops whose aligned segment cells touched an unknown similarity cell
+    sim_unknown = getattr(judge, "sim_unknown", None) or []
+    ops_touching_unknown = sum(
+        1 for op in ops
+        if op.a_start >= 0 and op.b_start >= 0
+        and any(sim_unknown[i][j]
+                for i in range(op.a_start, op.a_end)
+                for j in range(op.b_start, op.b_end)))
 
     labels_a, labels_b, stats = score_item(
         tokens_a, tokens_b, segs_a, segs_b, text_a, text_b,
@@ -64,17 +78,29 @@ def predict_item(item: dict, judge: Judge,
                         "end": s.end_token, "text": t} for s, t in zip(segs_b, b_texts)],
         "ops": [vars(o) for o in ops],
         "judgments": [None if j is None else {
-            "difference": j.difference, "spans_a": j.spans_a,
-            "spans_b": j.spans_b, "ok": j.ok, "repairs": j.repairs,
+            "a_ids": j.a_ids, "b_ids": j.b_ids,
+            "ok": j.ok, "repairs": j.repairs,
             "cached": j.cached, "lang_b": j.lang_b} for j in judgments],
         "judge_lang": lang,
+        "judge_prompt_version": PROMPT_VERSION_BY_KIND["judge_tag"],
         "coverage": cov,
         "stats": {"parse_failures": stats.parse_failures,
                   "repairs": stats.repairs,
                   "span_matched": stats.span_matched,
                   "span_unmatched": stats.span_unmatched,
                   "ops": stats.ops,
-                  "unparseable_similarity": judge.unparseable_similarity},
+                  "unparseable_similarity": judge.unparseable_similarity,
+                  "sim_unknown_cells": getattr(judge, "sim_unknown_cells", 0),
+                  "sim_imputed_cells": getattr(judge, "sim_imputed_cells", 0),
+                  "ops_touching_unknown": ops_touching_unknown,
+                  "flagged_a": stats.flagged_a,
+                  "flagged_b": stats.flagged_b,
+                  "dropped_punct_ids": stats.dropped_punct_ids,
+                  "invalid_pairs": stats.invalid_pairs,
+                  "invalid_fallback_tokens": stats.invalid_fallback_tokens,
+                  "judge_valid_token_coverage": (
+                      round(stats.valid_matched_tokens / stats.matched_tokens, 4)
+                      if stats.matched_tokens else None)},
     }
     record = {
         "id": item["id"], "text_a": text_a, "text_b": text_b,
@@ -155,9 +181,21 @@ def predict_baseline_item(item: dict, judge: Judge) -> dict:
     labels_b = [map_label_from_positive_to_negative(v) for v in labels_b]
     record = {"id": item["id"], "text_a": item["text_a"], "text_b": item["text_b"],
               "labels_a": labels_a, "labels_b": labels_b}
+    s1_emitted = len(data.get("sentence1") or [])
+    s2_emitted = len(data.get("sentence2") or [])
     detail = {"mode": "doc_baseline", "cached": cached, "repairs": repairs,
-              "sentence1_emitted": len(data.get("sentence1") or []),
-              "sentence2_emitted": len(data.get("sentence2") or [])}
+              "method_version": METHOD_VERSIONS["baseline"],
+              "policy": ("repair-exhausted whole-document annotation: tokens "
+                         "with no emitted pair get fallback_label=5 — a "
+                         "reference fallback, not a strong comparator"),
+              "sentence1_emitted": s1_emitted,
+              "sentence2_emitted": s2_emitted,
+              "emitted_coverage_a": (
+                  round(s1_emitted / len(tokens_a), 4) if tokens_a else None),
+              "emitted_coverage_b": (
+                  round(s2_emitted / len(tokens_b), 4) if tokens_b else None),
+              "fallback_tokens_a": max(0, len(tokens_a) - s1_emitted),
+              "fallback_tokens_b": max(0, len(tokens_b) - s2_emitted)}
     return {"record": record, "detail": detail}
 
 

@@ -336,6 +336,8 @@ class MockApertusClient:
     def _dispatch(self, content: str) -> str:
         if '"kind": "pair_similarity"' in content:
             return self._mock_similarity(content)
+        if '"kind": "judge_tag"' in content:
+            return self._mock_judge_tag(content)
         if '"kind": "judge_pair"' in content:
             return self._mock_judge(content)
         if '"kind": "doc_baseline"' in content:
@@ -365,6 +367,24 @@ class MockApertusClient:
             spans_b = [" ".join(wb[:3])] if wb else []
         return json.dumps({"semantic_difference": diff,
                            "differing_spans": {"side_a": spans_a, "side_b": spans_b}})
+
+    def _mock_judge_tag(self, content: str) -> str:
+        """Deterministic v3-tag mock: flag indices whose normalized token
+        does not appear on the other side (lexical proxy, NOT semantic)."""
+        req = _extract_json_block(content)
+        arr_a = req.get("a", [])
+        arr_b = req.get("b", [])
+        def norm(t):
+            return str(t).lower().strip(".,;:!?\"'()[]{}«»“”")
+        words_a = {norm(t) for _, t in arr_a if norm(t)}
+        words_b = {norm(t) for _, t in arr_b if norm(t)}
+        def keep(tok):
+            n = norm(tok)
+            return bool(n) and not re.fullmatch(r"\d+([.,]\d+)?%?", n) \
+                and len(n) > 1
+        a_ids = [i for i, t in arr_a if keep(t) and norm(t) not in words_b]
+        b_ids = [i for i, t in arr_b if keep(t) and norm(t) not in words_a]
+        return json.dumps({"a_ids": a_ids, "b_ids": b_ids})
 
     def _mock_baseline(self, content: str) -> str:
         req = _extract_json_block(content)
