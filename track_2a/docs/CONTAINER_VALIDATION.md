@@ -71,9 +71,17 @@ not repeated against the final exact image.
   this candidate deliberately requires explicit input selection and bounded
   arguments. Final input/output and coverage requirements must be resolved
   before choosing safe defaults or implementing a separate final runner.
-- The inspected official guide/form require model predictions but do not
-  specify an exact submission split, minimum coverage or prediction schema.
-  Three reused development records are not certified sufficient.
+- The linked UZH intro recording was reviewed after this validation. Its
+  successful-submission slide at 14:17 calls for development on train/validation
+  and a final test-set run before submission. The three reused development
+  records do not constitute that final-test evaluation. Upstream supports a
+  direct-score JSONL shape and expects full matching split counts/order; final
+  submission-specific export and judge-input details still need confirmation.
+- The successful-submission slide at 14:17 also requires reproducing the
+  original SwissGov-RSD baseline with Apertus using the original code. The
+  current comparator is a disclosed reimplementation with different prompting
+  and fallback behavior, not that exact baseline reproduction. This requirement
+  remains unmet; no additional inference is authorized here.
 - Final private prediction arrays have not been independently replayed.
   Frozen-pilot scores and detailed output/cost audit remain executor receipts.
 - No full corpus-dependent test suite, real-provider end-to-end run,
@@ -81,6 +89,31 @@ not repeated against the final exact image.
 - Original negative results, failed starts, cache-planning incident and frozen
   artifacts remain unchanged. No further inference or new gold/test data was
   authorized by this validation.
+
+## Organizer recording clarification — 3 October 2026
+
+The earlier text-only source review missed the linked intro recording. A later
+review read its complete displayed transcript and chat, and inspected the
+slides at 14:17 and 17:23. The final-test workflow above comes from the slide;
+it was not explicit in the spoken transcript. At 21:23–23:38 the presenter also
+requires predictions to map back to the dataset whitespace/punctuation tokens.
+The submission-format slide requires the specified Docker CLI and end-to-end
+execution but does not itself list mounts or environment inputs. Low-score
+encouragement is not evidence that a development-only diagnostic entry is
+exempt from the final-test workflow. No test data or model calls were used in
+this clarification review; no additional inference is authorized by it.
+
+A source-only review of upstream commit `1807a421` also found that
+`evaluation/utils.py` accepts direct-score rows with `id`, `text_a`, `text_b`,
+`labels_a` and `labels_b`. The test evaluator checks matching prediction/gold
+counts and pairs records by order. This supplies a concrete compatibility
+reference, without independently establishing the hackathon runtime mounts or
+submission filename contract. No dataset files were opened or evaluator run.
+
+[Upstream prediction loader](https://github.com/ZurichNLP/SwissGov-RSD/blob/1807a42100e742ed03d337c54c4b9ea86995f565/evaluation/utils.py);
+[test evaluator](https://github.com/ZurichNLP/SwissGov-RSD/blob/1807a42100e742ed03d337c54c4b9ea86995f565/scripts/evaluate_predictions_admin.py).
+
+[UZH intro recording](https://us06web.zoom.us/rec/share/tGdJYwswNSKiI-Qw6A0WE5Ltsrymzjyv_lXBq3bvLCF2GWnHXgjtoqADEzyLPGQ.0gXmR2Y5XdULyYp-)
 
 Sources: [submission guide](https://hackapertus.notion.site/how-to-submit-a-project),
 [UZH challenge](https://hackapertus.notion.site/track-2a-uzh),
