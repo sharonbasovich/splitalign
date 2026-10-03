@@ -1,0 +1,20 @@
+# Allow only runtime source, dependency lists, code tests and viewer assets.
+# In particular, never send credentials, data, outputs or caches to Docker.
+**
+!Dockerfile
+!.dockerignore
+!requirements.txt
+!requirements-dev.txt
+!track_2a/
+!track_2a/Makefile
+!track_2a/src/
+!track_2a/src/splitalign/
+!track_2a/src/splitalign/*.py
+!track_2a/tests/
+!track_2a/tests/*.py
+!track_2a/tests/*.mjs
+!track_2a/viewer/
+!track_2a/viewer/index.html
+!track_2a/viewer/style.css
+!track_2a/viewer/schema.js
+!track_2a/viewer/app.js
