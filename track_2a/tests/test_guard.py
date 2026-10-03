@@ -42,9 +42,15 @@ def test_symlink_escape_fails(tmp_path):
         guard.assert_path_allowed(link, root=root)
 
 
-def test_symlinked_dir_component_fails(tmp_path):
+def test_symlinked_dir_component_fails(tmp_path, monkeypatch):
     """Whole-directory symlink replacement inside the repo must fail closed."""
     # data/gold/dev/val -> outside dir: component-level check must reject
+    # Keep the probe wholly synthetic; selected corpus mounts are read-only.
+    track = tmp_path / "synthetic_track"
+    root = track / "data" / "gold" / "dev"
+    root.mkdir(parents=True)
+    monkeypatch.setattr(guard, "TRACK_DIR", track)
+    monkeypatch.setattr(guard, "GOLD_DIR", root)
     outside = tmp_path / "outside"
     outside.mkdir()
     link_dir = guard.GOLD_DIR / "val_link_probe"
@@ -85,3 +91,4 @@ def test_scan_tree_clean():
 
 def test_assert_ids_ok():
     guard.assert_ids_allowed(["admin_de_0"], {"admin_de_0", "admin_fr_1"})
+
