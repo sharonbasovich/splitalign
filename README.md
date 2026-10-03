@@ -10,19 +10,20 @@ built on hosted **Apertus** inference.
 ## Run
 
 ```bash
-make run
+make preflight
 ```
 
-Builds a Docker image and runs the pipeline on a dev/val smoke subset —
-works credential-free via the clearly-labelled deterministic `mock` backend.
-For real Apertus inference see `track_2a/README.md` (env vars
-`APERTUS_API_BASE`, `APERTUS_API_KEY`, `APERTUS_MODEL`,
-`SPLITALIGN_BACKEND=apertus`).
+Builds the container and checks configuration without loading data or making
+model calls. Plain `make run` deliberately fails until an absolute input
+folder and explicit bounded pipeline arguments are selected. See
+[the packaging instructions](track_2a/README.md) for configuration, official
+LLM aliases and required bounds. The organizer's final invocation and
+prediction-coverage contract remains pending clarification.
 
 ## Layout
 
 - `track_2a/` — the competition deliverable (source, data, viewer, report)
-- `Dockerfile`, `Makefile` — clean-checkout run entrypoint
+- `Dockerfile`, `Makefile` — container packaging and bounded-run entrypoints
 - `LICENSE` (Apache-2.0), `NOTICE` (attributions + disclosures)
 
 ## Integrity notes
