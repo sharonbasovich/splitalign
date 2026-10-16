@@ -3,35 +3,43 @@
 Cross-lingual token-level semantic-difference recognition for Swiss
 government documents. Submissions must use the Apertus model family —
 SplitAlign uses hosted Apertus 8B for both sentence similarity and
-pair-level difference judgments. See `technical_report.md` for details.
+pair-level difference judgments. See [the existing report](report/technical_report.md) for historical details.
 
-## Run it
+## Packaging candidate and safe checks
 
-From the repository root (or this directory):
+This draft changes packaging only. The organizer's plain clean-checkout
+`make run` contract and final prediction coverage remain pending clarification.
+Existing reports, incident records and result artifacts are unchanged.
 
-```bash
-make run
-```
+`make preflight` builds the container and checks local configuration without
+loading a dataset or contacting a model. Without model configuration it reports
+mock configuration only. `make -C track_2a test-contract` runs 18 synthetic
+standard-library contract tests without Docker, datasets or model calls.
 
-Builds a Docker image and runs the full pipeline on a bounded dev/val smoke
-subset, writing predictions, metrics and the evidence viewer to `out/`.
-It works on a clean checkout with **no credentials** — it then runs the
-deterministic `mock` backend, which is clearly labelled in every artifact
-and is *not* model output.
+A plain `make run` fails before Docker execution. An intentional pipeline needs
+an absolute `SPLITALIGN_DATA_DIR` mounted read-only and explicit `RUN_ARGS`
+beginning with `pipeline`, including split, language, positive limit,
+nonnegative offset, request cap and conditional token cap. No dataset or spending
+default is selected automatically. The loader reads the selected language file
+before applying limit and offset; those arguments alone do not establish which
+records were accessed.
 
-### Real Apertus inference
+### Model configuration
 
-Set these environment variables, then `SPLITALIGN_BACKEND=apertus make run`:
+The launcher accepts official `LLM_BASE_URL`, `LLM_API_KEY` and `LLM_NAME`,
+alongside legacy `APERTUS_API_BASE`, `APERTUS_API_KEY` and `APERTUS_MODEL`.
+When Apertus is selected, conflicting aliases and partial configuration fail
+closed. Real-provider
+configuration also requires a separately reviewed `APERTUS_BOUND_SPEC_JSON`.
+Preflight does not authenticate a key or validate the bound's conservatism.
+Credentials are forwarded by variable name, never embedded in source.
 
-| Variable | Secret? | Meaning |
-|---|---|---|
-| `APERTUS_API_BASE` | no | OpenAI-compatible base URL (`{base}/chat/completions`) |
-| `APERTUS_API_KEY` | **yes** | bearer token (CSCS hosted inference) |
-| `APERTUS_MODEL` | no | e.g. `swiss-ai/Apertus-v1.5-8B` |
-| `APERTUS_TIMEOUT_S` | no | request timeout (default 120) |
-| `APERTUS_RPS` | no | max requests/second (default 2) |
-
-Missing config fails honestly with the variable names — never a silent mock.
+The earlier source-only candidate built and completed a selected synthetic mock
+pipeline in Docker on 3 October 2026, with runtime networking disabled. See
+[validation scope and provenance](docs/CONTAINER_VALIDATION.md) and
+[packaging details](PACKAGING_CANDIDATE.md). This draft has later documentation
+changes and preserves 15 original files' trailing whitespace; the Docker-tested
+archive is identified separately. It has not been rerun as a final Git checkout.
 
 ## Layout
 

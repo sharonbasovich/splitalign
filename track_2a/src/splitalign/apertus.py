@@ -6,9 +6,9 @@ Two interchangeable clients behind one interface:
   (CSCS / Swiss AI). Configured exclusively via environment variables so no
   secret ever lives in source, prompts, logs or the repo:
 
-      APERTUS_API_BASE   e.g. https://<cscs-host>/v1   (OpenAI-compatible)
-      APERTUS_API_KEY    bearer token
-      APERTUS_MODEL      e.g. swiss-ai/Apertus-v1.5-8B
+      LLM_BASE_URL      OpenAI-compatible URL (alias: APERTUS_API_BASE)
+      LLM_API_KEY       bearer token (alias: APERTUS_API_KEY)
+      LLM_NAME          model id (alias: APERTUS_MODEL)
       APERTUS_TIMEOUT_S  optional, default 120
       APERTUS_RPS        optional max requests/second, default 2
 
@@ -39,11 +39,12 @@ from pathlib import Path
 
 
 class MissingCredentials(RuntimeError):
-    def __init__(self):
+    def __init__(self, message: str | None = None):
         super().__init__(
-            "Apertus backend is not configured. Set these environment "
-            "variables and retry: APERTUS_API_BASE (OpenAI-compatible base "
-            "URL), APERTUS_API_KEY (bearer token), APERTUS_MODEL (model id, "
+            message or "Apertus backend is not configured. Set these environment "
+            "variables and retry: LLM_BASE_URL (alias APERTUS_API_BASE; "
+            "OpenAI-compatible base URL), LLM_API_KEY (alias APERTUS_API_KEY; "
+            "bearer token), LLM_NAME (alias APERTUS_MODEL; model id, "
             "e.g. swiss-ai/Apertus-v1.5-8B). Optional: APERTUS_TIMEOUT_S, "
             "APERTUS_RPS. No credentials are bundled with this repo."
         )
@@ -162,9 +163,18 @@ class ApertusClient:
 
     @classmethod
     def from_env(cls) -> "ApertusClient":
-        base = os.environ.get("APERTUS_API_BASE")
-        key = os.environ.get("APERTUS_API_KEY")
-        model = os.environ.get("APERTUS_MODEL")
+        def env_alias(official: str, legacy: str) -> str | None:
+            a, b = os.environ.get(official), os.environ.get(legacy)
+            if a and b and a != b:
+                # Name the conflicting variables, never their secret values.
+                raise MissingCredentials(
+                    f"Conflicting configuration: {official} and {legacy}; "
+                    "set only one or make their values identical.")
+            return a or b
+
+        base = env_alias("LLM_BASE_URL", "APERTUS_API_BASE")
+        key = env_alias("LLM_API_KEY", "APERTUS_API_KEY")
+        model = env_alias("LLM_NAME", "APERTUS_MODEL")
         if not (base and key and model):
             raise MissingCredentials()
         spec = None
