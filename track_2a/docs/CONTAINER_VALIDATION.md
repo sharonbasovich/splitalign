@@ -69,19 +69,21 @@ not repeated against the final exact image.
 
 - The organizer's plain clean-checkout `make run` contract is not certified:
   this candidate deliberately requires explicit input selection and bounded
-  arguments. Final input/output and coverage requirements must be resolved
-  before choosing safe defaults or implementing a separate final runner.
-- The linked UZH intro recording was reviewed after this validation. Its
-  successful-submission slide at 14:17 calls for development on train/validation
-  and a final test-set run before submission. The three reused development
-  records do not constitute that final-test evaluation. Upstream supports a
-  direct-score JSONL shape and expects full matching split counts/order; final
-  submission-specific export and judge-input details still need confirmation.
-- The successful-submission slide at 14:17 also requires reproducing the
-  original SwissGov-RSD baseline with Apertus using the original code. The
-  current comparator is a disclosed reimplementation with different prompting
-  and fallback behavior, not that exact baseline reproduction. This requirement
-  remains unmet; no additional inference is authorized here.
+  arguments. Exact runtime inputs and submission-specific export details still
+  need confirmation before choosing safe defaults or implementing a final runner.
+- The official UZH Q&A, reviewed on 16 October 2026, says evaluations during
+  development must use only the development set; test runs come at the end.
+  Judges score the test split. Predictions must retain full-set order, and the
+  results must be reproducible from code without relying on submitted predictions.
+  The three reused development records do not constitute final-test evidence.
+  Previously inspected upstream code supports direct-score JSONL with matching
+  split counts/order; the actual final export and compatibility remain unverified.
+- The intro recording asks for a reproduced Apertus baseline. The official UZH
+  Q&A permits either the paper's prompting setup or DiffAlign, whichever is
+  closer to the submitted system. This clarifies the choice of baseline but
+  does not validate the current reimplemented comparator's different prompting
+  and fallback behavior. A suitable baseline reproduction remains unverified;
+  no additional inference is authorized here.
 - Final private prediction arrays have not been independently replayed.
   Frozen-pilot scores and detailed output/cost audit remain executor receipts.
 - No full corpus-dependent test suite, real-provider end-to-end run,
@@ -89,6 +91,19 @@ not repeated against the final exact image.
 - Original negative results, failed starts, cache-planning incident and frozen
   artifacts remain unchanged. No further inference or new gold/test data was
   authorized by this validation.
+
+## Q&A clarification reviewed — 16 October 2026
+
+The [official UZH Q&A](https://docs.google.com/document/d/1jDeo03BDQ3RdaI2h985RiyOTT_W2K5QaanBK7dbaB-4/edit)
+confirms test-split judging and development-set-only evaluation during
+development, with test runs at the end. It requires full-set prediction order
+and results reproducible from code without relying on submitted predictions.
+It also allows the paper's prompting baseline or DiffAlign, whichever is closer
+to the submitted system. This narrows the earlier baseline and prediction-order
+uncertainty; it does not establish valid final predictions, runtime compatibility,
+baseline reproduction or independent array replay. The historical recording
+review below is retained. No dataset access, model call or submission follows
+from this documentation correction.
 
 ## Organizer recording clarification — 3 October 2026
 
